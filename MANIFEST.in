@@ -1,0 +1,5 @@
+# Keep source distributions tidy and exclude local/ad-hoc artifacts
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+recursive-exclude src/beamio *.asc
