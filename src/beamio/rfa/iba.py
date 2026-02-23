@@ -4,8 +4,10 @@ import os
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+
 from beamio.common.measurement import Measurement, MeasurementType, RadiationType
 from beamio.common.beamdata import BeamData
+
 
 class IBAAccept6(BeamData):
     """

@@ -1,5 +1,6 @@
 import os
-from iba import IBAAccept6
+
+from beamio.rfa.iba import IBAAccept6
 from beamio.common.beamdata import BeamData
 
 # --------------------------------------------------------------------------

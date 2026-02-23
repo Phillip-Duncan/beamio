@@ -1,8 +1,11 @@
-import numpy as np
 from abc import ABC, abstractmethod
 import os
-from beamio.common.measurement import Measurement
 import copy
+
+import numpy as np
+
+from beamio.common.measurement import Measurement
+
 
 class BeamData(ABC):
     """ Abstract base class for beam data files. """
