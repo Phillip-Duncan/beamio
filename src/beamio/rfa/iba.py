@@ -251,6 +251,11 @@ class IBAAccept6(BeamData):
         # Optional: trim leading/trailing NaNs in dose (common for depth scans)
         m.positions, m.doses = self._trim_nan_pairs(m.positions, m.doses)
 
+        # Only store unique positions (remove duplicates if any, keeping first occurrence)
+        _, unique_indices = np.unique(m.positions, return_index=True)
+        m.positions = m.positions[unique_indices]
+        m.doses = m.doses[unique_indices]
+
         self.measurements.append(m)
 
     def _parse_bmt_radiation(self, bmt: str) -> RadiationType:
