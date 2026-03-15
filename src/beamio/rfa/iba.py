@@ -208,6 +208,8 @@ class IBAAccept6(BeamData):
         # 3.5) Round startpoint to nearest 0.2 mm if present, to mitigate precision/uncertainties
         if m.startpoint is not None:
             m.startpoint = tuple(round(coord * 5) / 5 for coord in m.startpoint)
+            # If abs(startpoint) <= 0.2 mm, set to 0.0 to avoid noise around zero
+            m.startpoint = tuple(0.0 if abs(coord) <= 0.2 else coord for coord in m.startpoint)
 
         # 4) Special hook for BMT -> radiation_type, energy
         if "BMT" in meta:
