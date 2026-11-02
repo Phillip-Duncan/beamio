@@ -1,6 +1,8 @@
 import os
+import xml.etree.ElementTree as ET
 
 from beamio.rfa.iba import IBAAccept6
+from beamio.rfa.snc import SNCSunScan
 from beamio.common.beamdata import BeamData
 
 # --------------------------------------------------------------------------
@@ -16,6 +18,10 @@ BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
         "any": [r":MSR", r"%FSZ", r"%STS", r"%EDS"],
         "file_extensions": ["asc"],
     },
+    SNCSunScan: {
+        "any": ["Tab-Delimited Scan Output"],
+        "file_extensions": ["snctxt", "sncxml"],
+    },
     # PTWBeamScan: {
     #     "all": ["BEGIN_SCAN_DATA"],
     #     "any": ["BeamScan"],
@@ -24,13 +30,37 @@ BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
 
 
 class BeamDataFactory:
-    """Keyword-based BeamData detector and loader."""
+    """Identify beam data by text signatures or its XML root."""
 
     @staticmethod
     def from_file(file_path: str) -> BeamData:
         """Identify and load the correct BeamData subclass based on file contents."""
-        with open(file_path, "r", errors="ignore") as f:
-            head = f.read(4096)
+        with open(file_path, "rb") as f:
+            prefix = f.read(8192)
+            # Feed bytes so XML declarations/BOMs and namespaces are respected.
+            # Continue through a long XML prolog instead of assuming a fixed offset.
+            parser = ET.XMLPullParser(events=("start",))
+            xml_root = None
+            chunk = prefix
+            try:
+                while chunk:
+                    parser.feed(chunk)
+                    event = next(parser.read_events(), None)
+                    if event is not None:
+                        xml_root = event[1].tag.rsplit("}", 1)[-1]
+                        break
+                    chunk = f.read(8192)
+                if xml_root is None:
+                    # Expat may defer a large prolog's events until end-of-input.
+                    parser.close()
+                    event = next(parser.read_events(), None)
+                    if event is not None:
+                        xml_root = event[1].tag.rsplit("}", 1)[-1]
+            except ET.ParseError:
+                pass
+        if xml_root == "snc_fileexport":
+            return SNCSunScan(file_path).parse()
+        head = prefix.decode("utf-8-sig", errors="ignore")
 
         for cls, rules in BEAMDATA_KEYWORDS.items():
             all_keys = rules.get("all", [])
@@ -48,7 +78,7 @@ class BeamDataFactory:
             return cls(file_path).parse()
 
         raise ValueError(f"Unsupported or unrecognized beam data file: {file_path}")
-    
+
     @staticmethod
     def is_supported_file(file_path: str) -> bool:
         """Check if the file is a supported BeamData file based on its extension."""
@@ -57,7 +87,7 @@ class BeamDataFactory:
             if "file_extensions" in rules and ext in rules["file_extensions"]:
                 return True
         return False
-    
+
     @staticmethod
     def get_supported_extensions() -> list[str]:
         """Get a list of all supported file extensions for BeamData files."""
@@ -66,4 +96,3 @@ class BeamDataFactory:
             exts = rules.get("file_extensions", [])
             extensions.update(exts)
         return sorted(extensions)
-    

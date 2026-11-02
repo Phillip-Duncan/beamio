@@ -4,12 +4,15 @@ Tests follow the production area they exercise:
 
 | Path | Coverage |
 | --- | --- |
-| `rfa/test_factory.py` | Format detection and extension discovery |
+| `rfa/test_factory.py` | Text/XML detection, Unicode encodings, namespaces, and extension discovery |
 | `rfa/test_iba.py` | IBA parsing, numerical cleanup, writing, and round trips |
+| `rfa/test_snc.py` | SNC text/XML parsing, layer selection, units, metadata, and text writing |
+| `common/test_measurement.py` | Diagonal reconstruction and measured XYZ sample preservation |
 | `tps/test_raystation.py` | RayStation writing, parsing, metadata, and round trips |
-| `integration/test_conversion.py` | Complete IBA-to-RayStation conversion and copy isolation |
+| `integration/test_conversion.py` | IBA/SNC/RayStation conversions and copy isolation |
 | `test_package.py` | Installed version metadata |
 | `support/measurements.py` | Shared scan cases and assertions |
+| `support/snc.py` | Synthetic SNC text and XML exports |
 
 ## Running tests
 

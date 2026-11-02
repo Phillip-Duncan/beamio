@@ -8,6 +8,7 @@ dependency, NumPy. Importing the package does not read files or start services.
 | `src/beamio/common/measurement.py` | NumPy samples, measurement and radiation enums, shared metadata, and coordinate reconstruction |
 | `src/beamio/common/beamdata.py` | Abstract reader/writer interface and conversion through independent copies |
 | `src/beamio/rfa/iba.py` | IBA myQA Accept 6 ASCII parsing and writing |
+| `src/beamio/rfa/snc.py` | SNC text parsing/writing and shared-model mapping; `_snc_xml.py` reads XML layers |
 | `src/beamio/rfa/factory.py` | Content-based detection and supported-extension discovery |
 | `src/beamio/rfa/ptw.py` | Placeholder; PTW support is not implemented |
 | `src/beamio/tps/raystation.py` | RayStation measured-curves CSV parsing and writing |
@@ -20,13 +21,20 @@ dependency, NumPy. Importing the package does not read files or start services.
 include energy, SSD, field size, wedge angle, and the scan start/end coordinates.
 Format-specific values remain in `measurement.metadata`.
 
+An optional `coordinates` array stores measured XYZ samples in millimetres,
+including off-axis acquisition motion. `reconstruct_xyz()` returns these
+samples when present and checks that they still match positions and endpoints.
+After editing geometry, update the coordinates too, or set `coordinates = None`
+to reconstruct an ideal profile from positions and endpoints.
+
 `BeamData` holds a list of measurements and file-level metadata. Subclasses
 implement `parse()` and `save(path)`. Parsing populates the instance and returns
 it, so `IBAAccept6(path).parse()` is the normal reader pattern.
 
 `beam.convert(TargetClass)` constructs a new target instance and deep-copies
-the measurements and file metadata. It does not perform dose calibration,
-normalization, or automatic unit conversion. `save()` applies the target
+the measurements and file metadata without recalibrating or normalizing doses.
+Format readers and writers translate their units
+to and from the shared millimetre model. `save()` applies the target
 writer's schema and defaults; format-specific metadata may not transfer.
 
 ## Adding a format

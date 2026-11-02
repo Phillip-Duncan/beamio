@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from beamio.common.measurement import Measurement, MeasurementType, RadiationType
+from beamio.common.measurement import Measurement, MeasurementType, RadiationType, diagonal_direction
 from beamio.common.beamdata import BeamData
 
 
@@ -233,13 +233,19 @@ class IBAAccept6(BeamData):
         rz = float(np.nanmax(z_arr) - np.nanmin(z_arr))
 
         # Assign, DEPTH, DIAGONAL, otherwise crossline/inline
-        if scn == "DPT" or (rz >= max(rx, ry) and rz > 0.5):
+        if scn == "DPT" or (scn != "DIA" and rz >= max(rx, ry) and rz > 0.5):
             m.type = MeasurementType.DepthDose
             m.positions = z_arr
         elif scn == "DIA":
             m.type = MeasurementType.DiagonalProfile
-            # For diagonal, we can store the distance along the diagonal as positions
-            m.positions = np.sqrt(x_arr**2 + y_arr**2) * np.sign(x_arr)  # signed distance along diagonal
+            xyz = np.column_stack((x_arr, y_arr, z_arr))
+            valid = np.all(np.isfinite(xyz), axis=1) & np.isfinite(d_arr)
+            xyz, d_arr = xyz[valid], d_arr[valid]
+            if not len(xyz):
+                return
+            direction = diagonal_direction(tuple(xyz[0]), tuple(xyz[-1]))
+            m.positions = xyz[:, :2] @ direction
+            m.coordinates = xyz
         else:
             if rx >= ry:
                 m.type = MeasurementType.CrosslineProfile
@@ -258,6 +264,11 @@ class IBAAccept6(BeamData):
         _, unique_indices = np.unique(m.positions, return_index=True)
         m.positions = m.positions[unique_indices]
         m.doses = m.doses[unique_indices]
+        if m.coordinates is not None:
+            m.coordinates = m.coordinates[unique_indices]
+            m.startpoint, m.endpoint = tuple(m.coordinates[0]), tuple(m.coordinates[-1])
+            direction = diagonal_direction(m.startpoint, m.endpoint)
+            m.positions = m.coordinates[:, :2] @ direction
 
         self.measurements.append(m)
 
@@ -333,6 +344,8 @@ class IBAAccept6(BeamData):
             # SCN depends on type
             if m.type == MeasurementType.DepthDose:
                 meta["SCN"] = "DPT"
+            elif m.type == MeasurementType.DiagonalProfile:
+                meta["SCN"] = "DIA"
             else:
                 meta["SCN"] = "PRO"
             meta.setdefault("FLD", "SEM")

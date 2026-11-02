@@ -48,3 +48,24 @@ def test_empty_file_round_trip(tmp_path):
     path = tmp_path / "empty.asc"
     IBAAccept6("").save(path)
     assert IBAAccept6(path).parse().measurements == []
+
+
+def test_diagonal_cleanup_keeps_coordinates_aligned(tmp_path):
+    path = tmp_path / "diagonal.asc"
+    path.write_text(""":MSR 1
+# Measurement number 1
+%SCN DIA
+= 10 5 50 60
+= 4 -3 50 100
+= -2 -11 50 50
+= 4 -3 50 99
+= 16 13 50 NaN
+:EOM
+:EOF
+""")
+    measurement = IBAAccept6(path).parse().measurements[0]
+    np.testing.assert_allclose(measurement.positions, [-10, 0, 10], atol=1e-12)
+    np.testing.assert_array_equal(measurement.doses, [50, 100, 60])
+    expected = [[-2, -11, 50], [4, -3, 50], [10, 5, 50]]
+    np.testing.assert_array_equal(measurement.coordinates, expected)
+    np.testing.assert_allclose(np.column_stack(measurement.reconstruct_xyz()), expected)

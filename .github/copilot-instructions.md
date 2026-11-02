@@ -25,4 +25,5 @@ Use Conventional Commits for commits and PR titles. `main` uses Python
 Semantic Release to update `pyproject.toml`, generate `RELEASE_NOTES.md`, tag,
 and publish after CI. Do not maintain a second runtime version constant.
 See `docs/development.md` and `docs/releasing.md` for the contribution and
-release workflows. PTW and SNC support are planned, not implemented.
+release workflows. SNC text supports reading/writing; SNC XML supports reading
+and processing-layer selection. PTW support is planned, not implemented.

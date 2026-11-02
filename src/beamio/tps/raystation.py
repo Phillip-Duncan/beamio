@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from beamio.common.beamdata import BeamData
-from beamio.common.measurement import Measurement
+from beamio.common.measurement import Measurement, diagonal_direction
 from beamio.common.measurement import MeasurementType, RadiationType  # adjust import path if different
 
 
@@ -221,9 +221,17 @@ class Raystation(BeamData):
             try:
                 m.metadata["DiagonalAngle[deg]"] = to_float(meta["DiagonalAngle[deg]"].split(";")[0].strip())
 
-                xend = float(positions[-1]) * np.cos(np.radians(m.metadata["DiagonalAngle[deg]"]))
-                yend = float(positions[-1]) * np.sin(np.radians(m.metadata["DiagonalAngle[deg]"]))
+                direction = np.array([
+                    np.cos(np.radians(m.metadata["DiagonalAngle[deg]"])),
+                    np.sin(np.radians(m.metadata["DiagonalAngle[deg]"])),
+                ])
+                origin = (np.asarray(m.startpoint[:2]) - float(positions[0]) * direction
+                          if m.startpoint is not None else np.zeros(2))
+                xend, yend = origin + float(positions[-1]) * direction
                 m.endpoint = (xend, yend, m.startpoint[2] if m.startpoint is not None else 0.0)
+                # Shared diagonal positions point toward positive X, regardless of CSV angle.
+                if direction[0] < 0 or (direction[0] == 0 and direction[1] < 0):
+                    positions = [-value for value in positions]
             except Exception:
                 pass
 
@@ -341,11 +349,10 @@ class Raystation(BeamData):
         ctm_reversed = {v: k for k, v in self.CURVE_TYPE_MAPPING.items()}
         meta["CurveType"] = ctm_reversed.get(m.type, None)
 
-        # Compute wedge angle from start and end points.
+        # Match the angle to the signed profile positions, independent of scan direction.
         if m.type == MeasurementType.DiagonalProfile:
             if m.startpoint is not None and m.endpoint is not None:
-                dx = m.endpoint[0] - m.startpoint[0]
-                dy = m.endpoint[1] - m.startpoint[1]
+                dx, dy = diagonal_direction(m.startpoint, m.endpoint)
                 diagonal_angle_rad = np.arctan2(dy, dx)
                 diagonal_angle_deg = np.degrees(diagonal_angle_rad)
                 # Round to nearest 0.1 degree for cleaner output and to avoid floating point precision issues

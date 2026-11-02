@@ -61,3 +61,5 @@ Thumbs.db
 
 # Ad-hoc test artifacts
 *.asc
+*.snctxt
+*.sncxml
