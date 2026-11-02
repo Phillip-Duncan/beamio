@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.1.1 (2026-11-02)
+
+### Bug Fixes
+
+- **docs**: Simplify release documentation
+  ([`9c71b24`](https://github.com/Phillip-Duncan/beamio/commit/9c71b24f6363b352b5356d68ba943cf29b916a37))
+
+
 ## v0.1.0 (2026-11-02)
 
 ### Bug Fixes
