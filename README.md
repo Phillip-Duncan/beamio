@@ -92,7 +92,7 @@ GitHub releases, and PyPI publishing. `pyproject.toml` is the version source;
 - [Format support and conversion behavior](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md)
 - [Development and contribution workflow](https://github.com/Phillip-Duncan/beamio/blob/main/docs/development.md)
 - [Testing guide](https://github.com/Phillip-Duncan/beamio/blob/main/tests/README.md)
-- [Versioning, TestPyPI, and releasing](https://github.com/Phillip-Duncan/beamio/blob/main/docs/releasing.md)
+- [Versioning and releasing](https://github.com/Phillip-Duncan/beamio/blob/main/docs/releasing.md)
 - [Release notes](https://github.com/Phillip-Duncan/beamio/blob/main/RELEASE_NOTES.md)
 
 ## License

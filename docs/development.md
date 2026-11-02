@@ -70,9 +70,9 @@ python tools/check_dist.py
 ```
 
 Use a clean `dist/` containing exactly this version's two archives.
-`check_dist.py --tag v0.1.0` also verifies a release tag against the project
-version; update the example tag for subsequent releases.
+The optional `--tag` argument also verifies a release tag against the
+project version.
 
 Only the release job may write version commits and tags. Only publishing jobs
 may request PyPI OIDC tokens. CI jobs use read-only repository permissions.
-See [releasing](releasing.md) for initial GitHub and PyPI account settings.
+See [releasing](releasing.md) for versioning and the release workflow.
