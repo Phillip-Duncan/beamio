@@ -2,6 +2,18 @@
 
 <!-- version list -->
 
+## v0.2.0 (2026-11-02)
+
+### Features
+
+- **snc**: Add SunSCAN and SunDOSE beam data support
+  ([`8919e00`](https://github.com/Phillip-Duncan/beamio/commit/8919e00f90a1dd974ee01e5c79954e448b169602))
+  - Read SNC text/XML exports with processing-layer selection - Write processed text and detect XML
+  encodings and namespaces - Preserve measured XYZ coordinates and photon fluence modes - Correct
+  off-axis diagonal IBA round trips - Reject incomplete headers and invalid scan counts - Add
+  regression tests, format documentation, and packaging safeguards
+
+
 ## v0.1.1 (2026-11-02)
 
 ### Bug Fixes
