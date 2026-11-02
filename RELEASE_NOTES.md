@@ -1,3 +1,18 @@
 # RELEASE NOTES
 
 <!-- version list -->
+
+## v0.1.0 (2026-11-02)
+
+### Bug Fixes
+
+- Fixed erroneous imports
+  ([`a44dcf1`](https://github.com/Phillip-Duncan/beamio/commit/a44dcf1a42cddd106c21e1b0e94960a17857789f))
+
+- Remove duplicate positions (and their corresponding dose values) sometimes present in IBAAccept6
+  data
+  ([`a0c0bb3`](https://github.com/Phillip-Duncan/beamio/commit/a0c0bb36d0ed2804d36fdb1cd4c49242a7ddcbe0))
+
+- Round iba start points within 0.2 mm to 0.0. This appears to be the realistic combined accuracy of
+  the BP2.
+  ([`4662b35`](https://github.com/Phillip-Duncan/beamio/commit/4662b35cf832a32fda13b1ba35113d7786a77734))
