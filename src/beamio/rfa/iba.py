@@ -140,6 +140,7 @@ class IBAAccept6(BeamData):
             if s.startswith(":EOF"):
                 if current_block:
                     self._parse_measurement_block(current_block)
+                    current_block = []
                 break
 
             current_block.append(raw)

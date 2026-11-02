@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Create a semantic release, or rehearse the current version on TestPyPI
+        type: choice
+        options: [testpypi, release]
+        default: testpypi
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    with:
+      artifact-name: candidate-distributions
+
+  release:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.target == 'release')
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      released: ${{ steps.semantic-release.outputs.released || 'false' }}
+      tag: ${{ steps.semantic-release.outputs.tag }}
+      version: ${{ steps.semantic-release.outputs.version }}
+    steps:
+      - name: Check out release branch and complete history
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Ensure this run still matches the release branch
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test "$(git rev-parse origin/main)" = "$WORKFLOW_SHA"
+      - name: Bootstrap the first release as 0.1.0
+        id: bootstrap
+        run: |
+          if [ -z "$(git tag --list 'v[0-9]*')" ]; then
+            echo "force=minor" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create semantic release
+        id: semantic-release
+        uses: python-semantic-release/python-semantic-release@v10.5.3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: github-actions
+          git_committer_email: actions@users.noreply.github.com
+          force: ${{ steps.bootstrap.outputs.force }}
+
+  validate-release:
+    if: needs.release.outputs.released == 'true'
+    needs: release
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.release.outputs.tag }}
+      release-tag: ${{ needs.release.outputs.tag }}
+      artifact-name: distributions
+
+  testpypi:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: checks
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/beamio/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: candidate-distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    if: needs.release.outputs.released == 'true'
+    needs: [release, validate-release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/beamio/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-assets:
+    if: needs.release.outputs.released == 'true'
+    needs: [release, validate-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distributions
+          path: dist
+      - name: Attach checked distributions to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"

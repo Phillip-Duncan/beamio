@@ -1,4 +1,10 @@
 # Keep source distributions tidy and exclude local/ad-hoc artifacts
+include LICENSE README.md RELEASE_NOTES.md
+recursive-include docs *.md
+recursive-include dev/templates/release_notes *.j2
+recursive-include tests *.py
+include tests/README.md
+recursive-include tools *.py
 
 global-exclude __pycache__
 global-exclude *.py[cod]

@@ -52,9 +52,9 @@ class BeamDataFactory:
     @staticmethod
     def is_supported_file(file_path: str) -> bool:
         """Check if the file is a supported BeamData file based on its extension."""
-        _, ext = os.path.splitext(file_path)
+        ext = os.path.splitext(file_path)[1].lstrip(".").lower()
         for rules in BEAMDATA_KEYWORDS.values():
-            if "file_extensions" in rules and ext.lower() in rules["file_extensions"]:
+            if "file_extensions" in rules and ext in rules["file_extensions"]:
                 return True
         return False
     
@@ -65,5 +65,5 @@ class BeamDataFactory:
         for rules in BEAMDATA_KEYWORDS.values():
             exts = rules.get("file_extensions", [])
             extensions.update(exts)
-        return list(extensions)
+        return sorted(extensions)
     

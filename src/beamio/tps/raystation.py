@@ -328,7 +328,7 @@ class Raystation(BeamData):
 
         
         # Only put in wedge info if the wedge_angle is > 0.
-        if m.wedge_angle > 0:
+        if m.wedge_angle is not None and m.wedge_angle > 0:
             # WedgeType and WedgeAngle if they exist, otherwise fall back to default value.
             if "WedgeType" in meta_in and meta_in["WedgeType"].strip():
                 meta["WedgeType"] = meta_in["WedgeType"].strip()
