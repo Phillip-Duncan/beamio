@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-11-03)
+
+### Features
+
+- **ptw**: Add Mephysto MCC water-tank reader
+  ([`5f2bf96`](https://github.com/Phillip-Duncan/beamio/commit/5f2bf96d5722b9b3e0373caf10dbfc2f76017ee2))
+  - Read photon and electron axial scans with reference readings - Preserve beam metadata and
+  displaced field edges - Detect MCC files reliably despite conflicting comment text - Add
+  regression tests, documentation, and packaging exclusions
+
+
 ## v0.2.0 (2026-11-02)
 
 ### Features
