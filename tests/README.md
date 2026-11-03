@@ -6,13 +6,15 @@ Tests follow the production area they exercise:
 | --- | --- |
 | `rfa/test_factory.py` | Text/XML detection, Unicode encodings, namespaces, and extension discovery |
 | `rfa/test_iba.py` | IBA parsing, numerical cleanup, writing, and round trips |
+| `rfa/test_ptw.py` | PTW MCC parsing, geometry, signals/reference data, encodings, and rejection of unsupported inputs |
 | `rfa/test_snc.py` | SNC text/XML parsing, layer selection, units, metadata, and text writing |
 | `common/test_measurement.py` | Diagonal reconstruction and measured XYZ sample preservation |
 | `tps/test_raystation.py` | RayStation writing, parsing, metadata, and round trips |
-| `integration/test_conversion.py` | IBA/SNC/RayStation conversions and copy isolation |
+| `integration/test_conversion.py` | IBA/SNC/PTW/RayStation conversions and copy isolation |
 | `test_package.py` | Installed version metadata |
 | `support/measurements.py` | Shared scan cases and assertions |
 | `support/snc.py` | Synthetic SNC text and XML exports |
+| `support/ptw.py` | Synthetic PTW MCC exports |
 
 ## Running tests
 

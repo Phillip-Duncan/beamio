@@ -5,12 +5,12 @@
 | IBA myQA Accept 6 ASCII | `beamio.rfa.IBAAccept6` | `.asc` | `BeamDataFactory.from_file(path)` |
 | SNC SunSCAN/SunDOSE text | `beamio.rfa.SNCSunScan` | `.snctxt` | `BeamDataFactory.from_file(path)` |
 | SNC SunDOSE XML (read only) | `beamio.rfa.SNCSunScan` | `.sncxml` | `BeamDataFactory.from_file(path)` |
+| PTW Mephysto MCC water-tank scans (read only) | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
 | RayStation 2025+ measured-curves CSV | `beamio.tps.raystation.Raystation` | `.csv` | Use the class explicitly |
 
-PTW BEAMSCAN/Mephysto (`.mcc`) is not implemented.
 `BeamDataFactory.is_supported_file(path)` checks the extension only; `from_file`
 reads file contents to identify a supported reader. Extension discovery
-currently returns `['asc', 'snctxt', 'sncxml']`.
+currently returns `['asc', 'mcc', 'snctxt', 'sncxml']`.
 
 ## IBA Accept
 
@@ -78,6 +78,58 @@ updating common metadata from the shared fields. It does not recreate raw
 telemetry or XML processing history. XML writing is not supported. Text output
 is tested by reading it back with beamio; re-import into SunDOSE has not yet
 been verified.
+
+## PTW Mephysto MCC
+
+```python
+from beamio.rfa import PTWMCC
+from beamio.tps.raystation import Raystation
+
+scans = PTWMCC("measurements.mcc").parse()
+reference = scans.measurements[0].metadata.get("PTW Reference")
+scans.convert(Raystation).save("measured_curves.csv")
+```
+
+The reader accepts `BEGIN_SCAN_DATA` exports with numbered `BEGIN_SCAN` blocks,
+key/value metadata, and `BEGIN_DATA` sample tables. Supported curve types are
+`PDD`, `CROSSPLANE_PROFILE`, and `INPLANE_PROFILE`. Photon (`MODALITY=X`) and
+electron (`MODALITY=EL`) beams are mapped to the shared model; photon `FILTER`
+values `FF`, `FFF`, and `SRS` map to `FluenceMode`. Input may use UTF-8 (with or
+without a BOM) or Windows-1252 encoding.
+
+Spatial values are already in millimetres. Field size is ordered crossplane/X,
+then inplane/Y. Profile geometry combines the measured positions, `SCAN_DEPTH`,
+and the perpendicular `SCAN_OFFAXIS_*` offset; depth scans use both off-axis
+offsets. Absent offsets default to zero. Collimator offsets are retained as
+metadata and do not translate the sample coordinates. Nonzero collimator
+offsets also populate `metadata["FieldsizeCorners[mm]"]` when both field widths
+are available, preserving displaced jaw edges during RayStation conversion.
+Update or clear that corner metadata when editing field geometry. Missing
+optional beam fields remain unset; profiles require a scan depth. Axis
+declarations, when present, must use crossplane X and inplane Y.
+
+Sample order, duplicate positions, and non-finite signal values are preserved;
+non-finite positions are rejected. The second data column becomes `doses` at
+its original scale, including exports in arbitrary units (`MEAS_UNIT=A.U.`).
+An optional third column is retained as a NumPy array in `metadata["PTW Reference"]`.
+The reader does not divide by reference readings, interpolate, normalize, or
+calibrate signals. Scan header values remain in `metadata`, the scan number is
+available as `metadata["PTW Scan Number"]`, and file header values are stored in
+`file_meta`.
+
+Automatic detection checks the first nonblank line for `BEGIN_SCAN_DATA` before
+other text signatures, so format names in scan comments do not change the reader.
+
+MCC writing, detector-array measurements (Starcheck/Octavius), and diagonal or
+angled MCC scans are not implemented. These inputs raise errors instead of
+being treated as ordinary axial scans. Incomplete blocks, mismatched or
+duplicate scan numbers, malformed samples, and duplicate metadata keys are
+also rejected, with line and scan context where available.
+
+The implementation was checked against the CC-Export V1.9 water-tank examples
+in [pymcc](https://github.com/tbezo/pymcc). It uses beamio's own parser and adds
+no runtime dependencies. Other MCC variants, including BEAMSCAN exports, have
+not yet been verified.
 
 ## RayStation
 

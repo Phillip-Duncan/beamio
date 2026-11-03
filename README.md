@@ -11,9 +11,8 @@ using a shared NumPy-based data model.
 | IBA myQA Accept 6 ASCII (`.asc`) | Yes | Yes | Yes |
 | SNC SunSCAN/SunDOSE text (`.snctxt`) | Yes | Yes | Yes |
 | SNC SunDOSE XML (`.sncxml`) | Yes | No | Yes |
+| PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | No | Yes |
 | RayStation 2025+ measured-curves CSV (`.csv`, semicolon-delimited) | Yes | Yes | No; use `Raystation` directly |
-
-PTW BEAMSCAN/Mephysto (`.mcc`) support is planned.
 
 ## Installation
 
@@ -29,7 +28,7 @@ python -m pip install beamio
 from beamio.rfa import BeamDataFactory, IBAAccept6
 from beamio.tps.raystation import Raystation
 
-# Detect and parse an IBA ASCII or SNC export.
+# Detect and parse an IBA ASCII, SNC, or PTW MCC export.
 beam = BeamDataFactory.from_file("measurements.asc")
 # Or select the reader explicitly:
 # beam = IBAAccept6("measurements.asc").parse()
@@ -59,6 +58,13 @@ scans.convert(Raystation).save("measured_curves.csv")
 SNC positions, field sizes, and SSD are converted to millimetres. Sample order,
 duplicate positions, dose values, and measured XYZ coordinates are preserved.
 XML can also select an earlier layer with `layer="raw"` or a layer number.
+
+PTW MCC water-tank exports use `PTWMCC(path).parse()` or automatic detection.
+The reader supports depth-dose, crossplane, and inplane scans, preserving
+exported sample order and signal scale. Optional reference readings are stored
+in `measurement.metadata["PTW Reference"]`; no reference correction or
+normalization is applied. MCC writing, detector arrays, and diagonal/angled
+MCC scans are not supported. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
 
 `BeamData` provides `parse()`, `save()`, and `convert()`. Each `Measurement`
 contains NumPy `positions` and `doses` arrays, a `MeasurementType`, a

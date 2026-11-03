@@ -2,10 +2,80 @@ import numpy as np
 import pytest
 
 from beamio.common.measurement import MeasurementType
-from beamio.rfa import IBAAccept6, SNCSunScan
+from beamio.rfa import IBAAccept6, PTWMCC, SNCSunScan
 from beamio.tps.raystation import Raystation
 from tests.support.measurements import assert_scan_equal
+from tests.support.ptw import mcc_export, mcc_scan
 from tests.support.snc import SNC_TEXT, xml_export
+
+
+@pytest.mark.parametrize(
+    "target,suffix", [(IBAAccept6, ".asc"), (Raystation, ".csv"), (SNCSunScan, ".snctxt")]
+)
+@pytest.mark.parametrize("curve", ["PDD", "CROSSPLANE_PROFILE", "INPLANE_PROFILE"])
+@pytest.mark.parametrize("modality,beam_filter", [("X", "FFF"), ("EL", "FF")])
+def test_mcc_conversion_preserves_geometry_and_beam_fields(
+    tmp_path, target, suffix, curve, modality, beam_filter
+):
+    path = tmp_path / "source.mcc"
+    path.write_text(
+        mcc_export(
+            mcc_scan(
+                {
+                    "SCAN_CURVETYPE": curve,
+                    "MODALITY": modality,
+                    "FILTER": beam_filter,
+                    # Use coordinates compatible with IBA's 0.2 mm header rounding.
+                    "SCAN_OFFAXIS_CROSSPLANE": "2.0",
+                }
+            )
+        )
+    )
+    source = PTWMCC(path).parse()
+    expected = source.measurements[0]
+    converted = source.convert(target)
+    converted.measurements[0].metadata["PTW Reference"][0] = 999
+    assert expected.metadata["PTW Reference"][0] == 2
+    destination = tmp_path / ("converted" + suffix)
+    converted.save(destination)
+    actual = target(destination).parse().measurements[0]
+    assert_scan_equal(actual, expected)
+    if target is not Raystation:
+        np.testing.assert_allclose(
+            np.column_stack(actual.reconstruct_xyz()), expected.coordinates, atol=1e-12
+        )
+    # RayStation omits a zero wedge angle; its reader leaves that field unset.
+    assert (actual.wedge_angle or 0) == expected.wedge_angle
+    if modality == "X" and target is not IBAAccept6:
+        assert actual.metadata["FluenceMode"] == "FFF"
+
+
+@pytest.mark.parametrize("curve", ["PDD", "CROSSPLANE_PROFILE", "INPLANE_PROFILE"])
+@pytest.mark.parametrize("offsets", [(-110, -110), (25, -15), (0, 0), (None, None)])
+def test_mcc_raystation_conversion_preserves_field_edges(tmp_path, curve, offsets):
+    path = tmp_path / "source.mcc"
+    path.write_text(
+        mcc_export(
+            mcc_scan(
+                {
+                    "SCAN_CURVETYPE": curve,
+                    "COLL_OFFSET_CROSSPLANE": offsets[0],
+                    "COLL_OFFSET_INPLANE": offsets[1],
+                }
+            )
+        )
+    )
+    source = PTWMCC(path).parse()
+    expected = source.measurements[0]
+    destination = tmp_path / "converted.csv"
+    source.convert(Raystation).save(destination)
+    actual = Raystation(destination).parse().measurements[0]
+    assert_scan_equal(actual, expected)
+    x, y = (value or 0 for value in offsets)
+    corners = [float(value) for value in actual.metadata["Fieldsize[mm]"].split(";")]
+    np.testing.assert_array_equal(corners, [x - 50, y - 100, x + 50, y + 100])
+    # Field offsets must not translate the exported sample positions.
+    np.testing.assert_array_equal(actual.positions, [-10, 0, 10])
 
 
 def test_conversion_is_independent_and_exports(tmp_path, iba_text):

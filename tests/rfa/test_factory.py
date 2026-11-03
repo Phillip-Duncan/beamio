@@ -7,14 +7,14 @@ from tests.support.snc import xml_export
 
 
 @pytest.mark.parametrize(
-    "name", ["scan.asc", "scan.ASC", "folder/scan.Asc", "scan.snctxt", "scan.SNCXML"]
+    "name", ["scan.asc", "scan.ASC", "folder/scan.Asc", "scan.snctxt", "scan.SNCXML", "scan.MCC"]
 )
 def test_supported_extensions(name):
     assert BeamDataFactory.is_supported_file(name)
-    assert BeamDataFactory.get_supported_extensions() == ["asc", "snctxt", "sncxml"]
+    assert BeamDataFactory.get_supported_extensions() == ["asc", "mcc", "snctxt", "sncxml"]
 
 
-@pytest.mark.parametrize("name", ["scan.csv", "scan.mcc", "scan", "scan.asc.bak"])
+@pytest.mark.parametrize("name", ["scan.csv", "scan", "scan.asc.bak"])
 def test_unsupported_extensions(name):
     assert not BeamDataFactory.is_supported_file(name)
 
@@ -24,6 +24,13 @@ def test_factory_rejects_unrecognized_content(tmp_path):
     source.write_text("Unknown format", encoding="utf-8")
     with pytest.raises(ValueError, match="Unsupported or unrecognized"):
         BeamDataFactory.from_file(source)
+
+
+def test_mcc_marker_in_unrelated_text_is_not_a_signature(tmp_path):
+    path = tmp_path / "notes.mcc"
+    path.write_text("Notes about MCC exports\nBEGIN_SCAN_DATA\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unsupported or unrecognized"):
+        BeamDataFactory.from_file(path)
 
 
 @pytest.mark.parametrize("encoding", ["utf8", "utf8-bom", "utf16-le", "utf16-be"])

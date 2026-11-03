@@ -10,7 +10,7 @@ dependency, NumPy. Importing the package does not read files or start services.
 | `src/beamio/rfa/iba.py` | IBA myQA Accept 6 ASCII parsing and writing |
 | `src/beamio/rfa/snc.py` | SNC text parsing/writing and shared-model mapping; `_snc_xml.py` reads XML layers |
 | `src/beamio/rfa/factory.py` | Content-based detection and supported-extension discovery |
-| `src/beamio/rfa/ptw.py` | Placeholder; PTW support is not implemented |
+| `src/beamio/rfa/ptw.py` | PTW Mephysto MCC water-tank parsing and shared-model mapping |
 | `src/beamio/tps/raystation.py` | RayStation measured-curves CSV parsing and writing |
 
 ## Shared model

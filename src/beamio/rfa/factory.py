@@ -2,17 +2,23 @@ import os
 import xml.etree.ElementTree as ET
 
 from beamio.rfa.iba import IBAAccept6
+from beamio.rfa.ptw import PTWMCC
 from beamio.rfa.snc import SNCSunScan
 from beamio.common.beamdata import BeamData
 
 # --------------------------------------------------------------------------
 # Each key is a BeamData subclass
 # Each value is a dict with:
+#   'first_line' -> allowed first nonblank lines; these signatures take precedence
 #   'all' → list of keywords that must ALL be present
 #   'any' → list of keywords where at least one must be present
 #   'file_extensions' → list of valid file extensions (without the leading dot e.g., 'asc', 'txt')
 # --------------------------------------------------------------------------
 BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
+    PTWMCC: {
+        "first_line": ["BEGIN_SCAN_DATA"],
+        "file_extensions": ["mcc"],
+    },
     IBAAccept6: {
         "all": [r"# Measurement number"],
         "any": [r":MSR", r"%FSZ", r"%STS", r"%EDS"],
@@ -22,10 +28,6 @@ BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
         "any": ["Tab-Delimited Scan Output"],
         "file_extensions": ["snctxt", "sncxml"],
     },
-    # PTWBeamScan: {
-    #     "all": ["BEGIN_SCAN_DATA"],
-    #     "any": ["BeamScan"],
-    # },
 }
 
 
@@ -61,8 +63,12 @@ class BeamDataFactory:
         if xml_root == "snc_fileexport":
             return SNCSunScan(file_path).parse()
         head = prefix.decode("utf-8-sig", errors="ignore")
+        first_line = next((line.strip() for line in head.splitlines() if line.strip()), "")
 
         for cls, rules in BEAMDATA_KEYWORDS.items():
+            first_lines = rules.get("first_line", [])
+            if first_lines and first_line not in first_lines:
+                continue
             all_keys = rules.get("all", [])
             any_keys = rules.get("any", [])
 
