@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-11-04)
+
+### Features
+
+- **icprofiler**: Add PRM acquisitions and profile analysis
+  ([`81777a3`](https://github.com/Phillip-Duncan/beamio/commit/81777a31b5ce5f1bc89216534bd7fa26bdd274fe))
+  - Read PRM acquisitions with embedded calibration and four-axis geometry - Expose raw frames,
+  calibrated detector time series, and beam-centre data - Add standalone profile helpers with
+  InflectionPoint and optional FWHM - Attempt unvalidated PRM versions with a warning - Validate
+  acquisition totals and reject ambiguous field edges - Add regression tests, documentation, and
+  packaging exclusions
+
+
 ## v0.3.0 (2026-11-03)
 
 ### Features
