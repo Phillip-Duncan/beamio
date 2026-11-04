@@ -2,16 +2,26 @@ import codecs
 
 import pytest
 
-from beamio.rfa import BeamDataFactory, SNCSunScan
+from beamio.rfa import BeamDataFactory, ICProfiler, SNCSunScan
+from tests.support.icprofiler import prm_export
 from tests.support.snc import xml_export
 
 
 @pytest.mark.parametrize(
-    "name", ["scan.asc", "scan.ASC", "folder/scan.Asc", "scan.snctxt", "scan.SNCXML", "scan.MCC"]
+    "name",
+    [
+        "scan.asc",
+        "scan.ASC",
+        "folder/scan.Asc",
+        "scan.snctxt",
+        "scan.SNCXML",
+        "scan.MCC",
+        "scan.PRM",
+    ],
 )
 def test_supported_extensions(name):
     assert BeamDataFactory.is_supported_file(name)
-    assert BeamDataFactory.get_supported_extensions() == ["asc", "mcc", "snctxt", "sncxml"]
+    assert BeamDataFactory.get_supported_extensions() == ["asc", "mcc", "prm", "snctxt", "sncxml"]
 
 
 @pytest.mark.parametrize("name", ["scan.csv", "scan", "scan.asc.bak"])
@@ -70,3 +80,37 @@ def test_detect_xml_after_long_prolog(tmp_path, encoding):
     text += "<!--" + "export note " * 1500 + "-->\n" + xml_export()
     path.write_text(text, encoding=encoding)
     assert len(BeamDataFactory.from_file(path).measurements) == 1
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "cp1252"])
+def test_icprofiler_detection_reads_past_long_free_text_header(tmp_path, encoding):
+    path = tmp_path / "measurement.dat"
+    text = prm_export().replace(
+        "Description:\tSynthetic acquisition", "Description:\t" + "Long note " * 2000
+    )
+    path.write_bytes(text.encode(encoding))
+    assert isinstance(BeamDataFactory.from_file(path), ICProfiler)
+
+
+def test_icprofiler_detection_attempts_unvalidated_versions_with_a_warning(tmp_path):
+    path = tmp_path / "measurement.prm"
+    path.write_text(prm_export().replace("Version:\t 25", "Version:\t 26"))
+    with pytest.warns(UserWarning, match="version '26'.*is unvalidated"):
+        acquisition = BeamDataFactory.from_file(path)
+    assert isinstance(acquisition, ICProfiler)
+    assert acquisition.file_meta["Version"] == "26"
+    assert len(acquisition.measurements) == 4
+
+
+def test_quoted_profiler_signature_in_unrelated_text_is_not_a_match(tmp_path):
+    path = tmp_path / "notes.prm"
+    path.write_text("Version:\t25\nDescription:\tCollector Model:\tIC PROFILER\n")
+    with pytest.raises(ValueError, match="Unsupported or unrecognized"):
+        BeamDataFactory.from_file(path)
+
+
+def test_profiler_detection_does_not_search_acquisition_data_for_a_model(tmp_path):
+    path = tmp_path / "notes.prm"
+    path.write_text("Version:\t25\nTYPE\tData\nCollector Model:\tIC PROFILER\n")
+    with pytest.raises(ValueError, match="Unsupported or unrecognized"):
+        BeamDataFactory.from_file(path)

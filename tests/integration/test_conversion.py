@@ -2,11 +2,46 @@ import numpy as np
 import pytest
 
 from beamio.common.measurement import MeasurementType
-from beamio.rfa import IBAAccept6, PTWMCC, SNCSunScan
+from beamio.rfa import IBAAccept6, ICProfiler, PTWMCC, SNCSunScan
 from beamio.tps.raystation import Raystation
 from tests.support.measurements import assert_scan_equal
+from tests.support.icprofiler import prm_export
 from tests.support.ptw import mcc_export, mcc_scan
 from tests.support.snc import SNC_TEXT, xml_export
+
+
+@pytest.mark.parametrize(
+    "target,suffix", [(IBAAccept6, ".asc"), (Raystation, ".csv"), (SNCSunScan, ".snctxt")]
+)
+def test_icprofiler_conversion_preserves_four_profiles(tmp_path, target, suffix):
+    source_path = tmp_path / "source.prm"
+    source_path.write_text(prm_export())
+    source = ICProfiler(source_path).parse()
+    output_path = tmp_path / ("converted" + suffix)
+    converted = source.convert(target)
+    converted.save(output_path)
+    actual = target(output_path).parse()
+    assert len(actual.measurements) == 4
+    for expected, scan in zip(source.measurements, actual.measurements):
+        assert scan.type == expected.type
+        assert scan.radiation_type == expected.radiation_type
+        assert scan.energy == expected.energy
+        assert scan.SSD == expected.SSD
+        assert scan.field_size == expected.field_size
+        assert scan.wedge_angle == expected.wedge_angle
+        np.testing.assert_allclose(scan.positions, expected.positions, rtol=1e-5)
+        np.testing.assert_allclose(scan.doses, expected.doses)
+        np.testing.assert_allclose(scan.startpoint, expected.startpoint)
+        if scan.type == MeasurementType.DiagonalProfile or target is not Raystation:
+            np.testing.assert_allclose(
+                np.column_stack(scan.reconstruct_xyz()), expected.coordinates, atol=1e-3
+            )
+        if target is not IBAAccept6:
+            assert scan.metadata["FluenceMode"] == "FFF"
+    converted.measurements[0].metadata["IC Profiler"]["Calibration"][0] = 100
+    converted.measurements[0].metadata["IC Profiler Header"]["Machine Data"]["Energy"] = "15 MV"
+    assert source.measurements[0].metadata["IC Profiler"]["Calibration"][0] == 2
+    assert source.file_meta["Machine Data"]["Energy"] == "6 MV"
 
 
 @pytest.mark.parametrize(

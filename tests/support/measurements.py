@@ -9,6 +9,13 @@ AXIAL_SCANS = [
 ]
 
 
+def profile_samples(*, center=2.5, half_width=50.0):
+    """A flat field with raised-cosine edges at center +/- half_width, in mm."""
+    positions = np.arange(-160, 161, 5, dtype=float)
+    phase = np.clip((np.abs(positions - center) - (half_width - 10)) / 20, 0, 1)
+    return positions, 50 * (1 + np.cos(np.pi * phase))
+
+
 def assert_scan_equal(actual, expected):
     np.testing.assert_allclose(actual.positions, expected.positions)
     np.testing.assert_allclose(actual.doses, expected.doses)

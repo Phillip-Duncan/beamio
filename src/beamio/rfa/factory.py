@@ -2,6 +2,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from beamio.rfa.iba import IBAAccept6
+from beamio.rfa.icprofiler import ICProfiler
 from beamio.rfa.ptw import PTWMCC
 from beamio.rfa.snc import SNCSunScan
 from beamio.common.beamdata import BeamData
@@ -19,6 +20,9 @@ BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
         "first_line": ["BEGIN_SCAN_DATA"],
         "file_extensions": ["mcc"],
     },
+    ICProfiler: {
+        "file_extensions": ["prm"],
+    },
     IBAAccept6: {
         "all": [r"# Measurement number"],
         "any": [r":MSR", r"%FSZ", r"%STS", r"%EDS"],
@@ -29,6 +33,18 @@ BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
         "file_extensions": ["snctxt", "sncxml"],
     },
 }
+
+
+def _icprofiler_header(file_path: str) -> bool:
+    """Inspect complete PRM header lines without scanning its acquisition data."""
+    with open(file_path, "rb") as source:
+        for raw in source:
+            cells = [cell.strip() for cell in raw.rstrip(b"\r\n").split(b"\t")]
+            if cells[0] in (b"Definitions:", b"TYPE", b"Data:"):
+                break
+            if cells[0] == b"Collector Model:":
+                return len(cells) > 1 and cells[1] == b"IC PROFILER"
+    return False
 
 
 class BeamDataFactory:
@@ -66,6 +82,14 @@ class BeamDataFactory:
         first_line = next((line.strip() for line in head.splitlines() if line.strip()), "")
 
         for cls, rules in BEAMDATA_KEYWORDS.items():
+            if cls is ICProfiler:
+                # Free-text header fields can extend beyond the initial prefix.
+                # Inspect labelled lines rather than matching quoted signatures.
+                if first_line.partition("\t")[0].strip() == "Version:" and _icprofiler_header(
+                    file_path
+                ):
+                    return cls(file_path).parse()
+                continue
             first_lines = rules.get("first_line", [])
             if first_lines and first_line not in first_lines:
                 continue

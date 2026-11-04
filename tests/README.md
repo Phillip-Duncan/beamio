@@ -7,14 +7,19 @@ Tests follow the production area they exercise:
 | `rfa/test_factory.py` | Text/XML detection, Unicode encodings, namespaces, and extension discovery |
 | `rfa/test_iba.py` | IBA parsing, numerical cleanup, writing, and round trips |
 | `rfa/test_ptw.py` | PTW MCC parsing, geometry, signals/reference data, encodings, and rejection of unsupported inputs |
+| `rfa/test_icprofiler.py` | IC Profiler PRM frames, leakage/calibration, detector gaps, diagonal geometry, metadata, encodings, and validation |
+| `rfa/test_icprofiler_series.py` | Interval/cumulative series, detector signals, timing/pulse validity, inflection/FWHM selection, known moving fields, and missing edges |
 | `rfa/test_snc.py` | SNC text/XML parsing, layer selection, units, metadata, and text writing |
 | `common/test_measurement.py` | Diagonal reconstruction and measured XYZ sample preservation |
+| `common/test_profile.py` | Public single-profile helpers, signal thresholds, repeated coordinates, missing values, and validation |
 | `tps/test_raystation.py` | RayStation writing, parsing, metadata, and round trips |
-| `integration/test_conversion.py` | IBA/SNC/PTW/RayStation conversions and copy isolation |
+| `integration/test_conversion.py` | IBA/SNC/PTW/ICProfiler/RayStation conversions and copy isolation |
+| `integration/test_profile.py` | Profile analysis on SNC tank, IBA, PTW MCC, and RayStation measurements |
 | `test_package.py` | Installed version metadata |
 | `support/measurements.py` | Shared scan cases and assertions |
 | `support/snc.py` | Synthetic SNC text and XML exports |
 | `support/ptw.py` | Synthetic PTW MCC exports |
+| `support/icprofiler.py` | Synthetic IC Profiler PRM acquisitions |
 
 ## Running tests
 

@@ -6,11 +6,14 @@ dependency, NumPy. Importing the package does not read files or start services.
 | Area | Responsibility |
 | --- | --- |
 | `src/beamio/common/measurement.py` | NumPy samples, measurement and radiation enums, shared metadata, and coordinate reconstruction |
+| `src/beamio/profile.py` | Public vendor-independent profile edges, centres, and widths from one X/Y profile |
 | `src/beamio/common/beamdata.py` | Abstract reader/writer interface and conversion through independent copies |
 | `src/beamio/rfa/iba.py` | IBA myQA Accept 6 ASCII parsing and writing |
 | `src/beamio/rfa/snc.py` | SNC text parsing/writing and shared-model mapping; `_snc_xml.py` reads XML layers |
 | `src/beamio/rfa/factory.py` | Content-based detection and supported-extension discovery |
 | `src/beamio/rfa/ptw.py` | PTW Mephysto MCC water-tank parsing and shared-model mapping |
+| `src/beamio/rfa/icprofiler.py` | IC PROFILER PRM frames, calibration, and four-axis profiles |
+| `src/beamio/rfa/_icprofiler_series.py` | IC Profiler time-series results and detector signals, delegating profile analysis to `beamio.profile` |
 | `src/beamio/tps/raystation.py` | RayStation measured-curves CSV parsing and writing |
 
 ## Shared model
@@ -20,6 +23,13 @@ dependency, NumPy. Importing the package does not read files or start services.
 `RadiationType` identifies photons, electrons, and protons. Optional fields
 include energy, SSD, field size, wedge angle, and the scan start/end coordinates.
 Format-specific values remain in `measurement.metadata`.
+
+The public `beamio.profile` module accepts position/dose arrays and depends
+only on NumPy. It never imports readers or the shared model. Users pass
+measurement arrays explicitly when requesting analysis. IC Profiler
+time-series methods select valid frames, apply their relative signal filter,
+and call the same functions with each frame's X/Y samples. Analysis does not
+mutate acquired arrays or metadata.
 
 An optional `coordinates` array stores measured XYZ samples in millimetres,
 including off-axis acquisition motion. `reconstruct_xyz()` returns these
