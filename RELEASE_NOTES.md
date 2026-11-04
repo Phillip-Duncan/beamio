@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-11-04)
+
+### Features
+
+- **measurement**: Support spatial and temporal acquisitions
+  ([`2da6659`](https://github.com/Phillip-Duncan/beamio/commit/2da665919176f84fa73d254e410ab9ec1892d24b))
+  - Add SRS MapCHECK dose-map and raw-movie readers with automatic detection - Add dose planes, dose
+  volumes, acquisition types, and temporal arrays - Expose IC Profiler frames through shared NumPy
+  measurement arrays - Interpolate movie gaps using directional contrasts and perimeter brackets -
+  Reject unsupported curve exports before changing output files - Add regression tests,
+  documentation, and packaging exclusions
+
+
 ## v0.4.0 (2026-11-04)
 
 ### Features
