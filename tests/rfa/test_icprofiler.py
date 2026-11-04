@@ -333,9 +333,12 @@ def test_compound_metadata_still_splits_only_known_labels(tmp_path):
     assert beam.file_meta["Machine Data"]["Collimator Angle"] == "0 deg"
 
 
-def test_reparse_replaces_state_and_writing_is_explicitly_unsupported(tmp_path):
+def test_reparse_replaces_state_and_writes_native_acquisition(tmp_path):
     beam = read_prm(tmp_path)
     beam.parse()
     assert len(beam.measurements) == 4
-    with pytest.raises(NotImplementedError, match="PRM writing"):
-        beam.save(tmp_path / "output.prm")
+    output = tmp_path / "output.prm"
+    beam.save(output)
+    actual = ICProfiler(output).parse()
+    for expected, scan in zip(beam.measurements, actual.measurements):
+        np.testing.assert_allclose(scan.doses, expected.doses, rtol=0, atol=1e-10)

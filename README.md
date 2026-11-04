@@ -11,9 +11,9 @@ using a shared NumPy-based data model.
 | IBA myQA Accept 6 ASCII (`.asc`) | Yes | Yes | Yes |
 | SNC SunSCAN/SunDOSE text (`.snctxt`) | Yes | Yes | Yes |
 | SNC SunDOSE XML (`.sncxml`) | Yes | No | Yes |
-| PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | No | Yes |
-| SNC IC PROFILER acquisitions (`.prm`, version 25 validated) | Yes | No | Yes |
-| SNC SRS MapCHECK dose maps (`.txt`) and raw movies (`.smcm`, revision A validated) | Yes | No | Yes |
+| PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | Yes | Yes |
+| SNC IC PROFILER acquisitions (`.prm`, version 25 validated) | Yes | Yes; native acquisition metadata required | Yes |
+| SNC SRS MapCHECK dose maps (`.txt`) and raw movies (`.smcm`, revision A validated) | Yes | Yes; native acquisition metadata required | Yes |
 | RayStation 2025+ measured-curves CSV (`.csv`, semicolon-delimited) | Yes | Yes | No; use `Raystation` directly |
 
 ## Installation
@@ -39,7 +39,8 @@ for measurement in beam.measurements:
     print(measurement.type, measurement.energy, measurement.field_size)
     print(measurement.axes, measurement.doses)
 
-# Conversion copies measurements and metadata; save writes the target format.
+# Conversion warns and drops unsupported measurements, then copies retained
+# measurements and metadata. Select frames/rows first for curve-only targets.
 converted = beam.convert(Raystation)
 converted.save("measured_curves.csv")
 
@@ -65,8 +66,9 @@ PTW MCC water-tank exports use `PTWMCC(path).parse()` or automatic detection.
 The reader supports depth-dose, crossplane, and inplane scans, preserving
 exported sample order and signal scale. Optional reference readings are stored
 in `measurement.metadata["PTW Reference"]`; no reference correction or
-normalization is applied. MCC writing, detector arrays, and diagonal/angled
-MCC scans are not supported. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
+normalization is applied. MCC writing supports the same axial scan types,
+including reference readings. Detector arrays and diagonal/angled MCC scans
+are not supported. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
 
 IC Profiler acquisitions and SRS MapCHECK maps/movies use the same shared
 spatial and temporal measurement model:
@@ -114,7 +116,20 @@ Movie samples retain cumulative raw counts, with contrast-adaptive linear
 interpolation of interior gaps and linear interpolation of bracketed perimeter
 gaps. No extrapolation or calibrated movie dose is reconstructed. Header,
 calibration, detector and acquisition-counter metadata
-remain in `file_meta`; signal arrays live only in the measurements. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
+remain in `file_meta`; shared signal arrays are exposed through Measurements.
+See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
+SRS MapCHECK additionally retains every source table and movie channel in
+`file_meta["SRS MapCHECK"]` for native writing. Its final dose table aliases
+the static Measurement array. PRM retains auxiliary channels, calibration
+rows, definitions and ignored-detector raw counts for native writing.
+Both acquisition writers preserve the shared model and require their retained
+instrument metadata; they do not invent missing acquisition records.
+
+```python
+PTWMCC("measurements.mcc").parse().save("export.mcc")
+acquisition.save("export.prm")
+SRSMapCheck("measurement.smcm").parse().save("export.smcm")
+```
 
 The public `beamio.profile` functions accept one position/dose profile at a
 time, using `InflectionPoint` edges by default or optional `FWHM`. Users select
@@ -126,7 +141,14 @@ Existing IBA, SNC tank text, and RayStation writers accept only static 1D
 measurements. Planes, volumes, and time series require explicit selection of
 the frame/profile to export and otherwise raise an error before writing.
 
-Conversion transfers the shared model and copies metadata, but format-specific
+Each format declares `supported_acquisition_types`, `supported_measurement_types`,
+and `supported_radiation_types` as immutable class attributes. Conversion checks
+all three, warns for each unsupported measurement and omits it from the result.
+If none are supported, the converted object has an empty measurements list.
+The source is unchanged. Unknown radiation (`None`) is explicitly allowed by
+the current formats; unsupported radiation types are not substituted.
+
+Conversion transfers compatible shared measurements and copies metadata, but format-specific
 writers may use defaults or omit unsupported metadata. In particular, the
 RayStation writer generates its default file header (including an export time)
 rather than preserving the input header. IBA parsing removes non-finite sample

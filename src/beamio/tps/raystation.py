@@ -52,6 +52,10 @@ class Raystation(BeamData):
         "Proton": RadiationType.PROTON,
     }
 
+    supported_acquisition_types = frozenset({AcquisitionType.Static})
+    supported_measurement_types = frozenset(CURVE_TYPE_MAPPING.values())
+    supported_radiation_types = frozenset({None, *RADIATION_TYPE_MAPPING.values()})
+
     def __init__(self, filepath: str):
         super().__init__(filepath)
         # extras: header comments we couldn't parse into key/value
@@ -322,8 +326,8 @@ class Raystation(BeamData):
 
     def _format_measurement_block(self, m: Measurement) -> List[str]:
         if (
-            m.acquisition_type is not AcquisitionType.Static
-            or m.type not in self.CURVE_TYPE_MAPPING.values()
+            m.acquisition_type not in self.supported_acquisition_types
+            or m.type not in self.supported_measurement_types
         ):
             raise ValueError(
                 "RayStation output supports only static 1D measurements; "

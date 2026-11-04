@@ -45,30 +45,50 @@ default; SRS MapCHECK produces one static plane or one plane time series.
 Both readers take only a file path and expose every acquired frame through
 the same Measurement arrays. Selection and signal transformations belong to
 the caller. Signals belong to Measurement.doses; source headers, detector
-labels, calibration and acquisition counters remain metadata. Raw tables are
-local parsing variables and are released after mapping to the shared model.
+labels, calibration and acquisition counters remain metadata. SRS MapCHECK
+retains all source tables, movie columns, correction cells and coordinate rows
+in file-level metadata for native writing. Its final static dose table aliases
+Measurement.doses. IC Profiler retains auxiliary channels and ignored-detector
+raw counts; other raw detector counts can be reconstructed from shared corrected
+signals and embedded calibration, so its full parsing table is released.
 There are no vendor-specific series containers or duplicate frame accessors.
 Readers expose only `file_path`, `measurements` and `file_meta`. Full headers
-are not copied into each Measurement, and metadata has no raw-table column
-indices. Counter vectors are independent copies so NumPy views cannot retain
-an entire acquisition table accidentally. Unused vendor channels and
-intermediate grids are not retained.
+are not copied into each Measurement. Native column labels and acquisition
+records belong in metadata, with no separate reader data container. SRS movie
+counter vectors reference the intentionally retained native table. IC counter
+vectors and auxiliary channels are independent copies.
 
-`beam.convert(TargetClass)` constructs a new target instance and deep-copies
-the measurements and file metadata without recalibrating or normalizing doses.
+Each concrete `BeamData` declares immutable `supported_acquisition_types`,
+`supported_measurement_types`, and `supported_radiation_types` class attributes,
+containing the shared enum members it can represent. `None` is explicitly
+included where undeclared radiation metadata is supported. Empty base defaults
+prevent undeclared or newly introduced types from being accepted silently.
+
+`beam.convert(TargetClass)` constructs a new target instance, checks all three
+capabilities for every measurement, and emits one `UserWarning` per omitted
+measurement identifying its one-based index, target, and unsupported fields.
+Remaining measurements keep their order. If none qualify, the target is empty;
+an empty source converts quietly. Measurements and the complete file metadata
+are deep-copied together, preserving their internal aliases without sharing
+arrays with the source. Conversion does not select frames/rows, recalibrate,
+normalize, or validate native acquisition completeness.
 Format readers and writers translate their units
 to and from the shared millimetre model. `save()` applies the target
 writer's schema and defaults; format-specific metadata may not transfer. Curve
 writers check their own supported measurement types and acquisition layouts
 at serialization, and call Measurement.validate() for the shared array
 contract. Generic model validation contains no file-format policy. Writers
-buffer their output, so rejected measurements do not partially replace files.
+buffer and encode their output before opening the destination, so rejected
+measurements do not partially replace files. MCC writes generic static axial
+profiles. PRM and SRS MapCHECK native writers require retained acquisition
+metadata; acquisition information is never synthesized from unrelated curves.
 
 ## Adding a format
 
 Put shared model behavior in `common`, vendor measurement readers in `rfa`, and
 treatment-planning interfaces in `tps`. Shared code must not import vendor
-implementations. Implement a `BeamData` subclass and add corresponding tests
+implementations. Implement a `BeamData` subclass, declare its three capability
+sets, and add corresponding tests
 under the matching source area. Add complete conversions under
 `tests/integration`. Extend the factory's detection rules only when a reader
 has an unambiguous signature and is implemented.

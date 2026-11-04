@@ -48,6 +48,13 @@ class IBAAccept6(BeamData):
         "PRO": RadiationType.PROTON,
     }
 
+    supported_acquisition_types = frozenset({AcquisitionType.Static})
+    supported_measurement_types = frozenset({
+        MeasurementType.DepthDose, MeasurementType.CrosslineProfile,
+        MeasurementType.InlineProfile, MeasurementType.DiagonalProfile,
+    })
+    supported_radiation_types = frozenset({None, *RADIATION_TYPE_MAPPING.values()})
+
     def __init__(self, file_path: str) -> None:
         super().__init__(file_path)
         self._init_mappings()
@@ -337,11 +344,9 @@ class IBAAccept6(BeamData):
         out.append("#")
 
         for idx, m in enumerate(self.measurements, start=1):
-            if m.acquisition_type is not AcquisitionType.Static or m.type not in (
-                MeasurementType.DepthDose,
-                MeasurementType.CrosslineProfile,
-                MeasurementType.InlineProfile,
-                MeasurementType.DiagonalProfile,
+            if (
+                m.acquisition_type not in self.supported_acquisition_types
+                or m.type not in self.supported_measurement_types
             ):
                 raise ValueError(
                     "IBA output supports only static 1D measurements; "

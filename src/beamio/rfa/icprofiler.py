@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import warnings
+import copy
 
 import numpy as np
 
@@ -105,16 +106,20 @@ def _validate_totals(metadata: dict, columns: tuple[str, ...], data: np.ndarray)
 
 
 def _read(path: Path):
+    raw = path.read_bytes()
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        text = raw.decode("utf-8-sig")
+        encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8"
     except UnicodeDecodeError:
-        text = path.read_text(encoding="cp1252")
+        text = raw.decode("cp1252")
+        encoding = "cp1252"
     metadata: dict = {}
     corrections: dict[str, list[str]] = {}
     rows: list[list[float]] = []
     target = metadata
     columns = None
     definitions = False
+    definition_lines = []
     for line_number, raw in enumerate(text.splitlines(), 1):
         cells = [cell.strip() for cell in raw.split("\t")]
         if not any(cells):
@@ -140,6 +145,8 @@ def _read(path: Path):
                     raise ValueError(f"Unexpected table row: {marker!r}")
             elif marker == "Definitions:":
                 definitions = True
+            elif definitions:
+                definition_lines.append(raw)
             elif not definitions:
                 section = raw.strip()
                 if section in _SECTIONS:
@@ -154,6 +161,7 @@ def _read(path: Path):
             raise ValueError(f"IC Profiler line {line_number}: {exc}") from exc
     if columns is None or not rows:
         raise ValueError("IC Profiler requires a TYPE table and at least one Data row.")
+    metadata["IC Profiler"] = {"Definitions": tuple(definition_lines), "Encoding": encoding}
     return metadata, columns, corrections, np.asarray(rows, dtype=float)
 
 
@@ -172,6 +180,18 @@ class ICProfiler(BeamData):
     Measurement metadata identifies its axis and detector IDs. Ignored
     detectors retain their geometry with NaN signals; no interpolation is applied.
     """
+
+    supported_acquisition_types = frozenset({AcquisitionType.TimeSeries})
+    supported_measurement_types = frozenset(
+        {
+            MeasurementType.CrosslineProfile,
+            MeasurementType.InlineProfile,
+            MeasurementType.DiagonalProfile,
+        }
+    )
+    supported_radiation_types = frozenset(
+        {None, RadiationType.PHOTON, RadiationType.ELECTRON, RadiationType.PROTON}
+    )
 
     def parse(self) -> ICProfiler:
         metadata, columns, corrections, data = _read(Path(self.file_path))
@@ -293,23 +313,295 @@ class ICProfiler(BeamData):
             }
             scan.validate()
             measurements.append(scan)
-        metadata["IC Profiler"] = {
-            "Detector IDs": detector_ids,
-            "Leak Rates": factors["BIAS1"],
-            "Calibration": factors["Calibration"],
-            "Ignored Detectors": ignored,
-            # Copies avoid retaining the complete raw table through NumPy views.
-            "Updates": data[:, columns.index("UPDATE#")].copy(),
-            "Pulses": data[:, columns.index("PULSES")].copy(),
-            "Statuses": data[:, columns.index("STATUS")].copy(),
-        }
+        metadata["IC Profiler"].update(
+            {
+                "Detector IDs": detector_ids,
+                "Leak Rates": factors["BIAS1"],
+                "Calibration": factors["Calibration"],
+                "Ignored Detectors": ignored,
+                # Copies avoid retaining the complete raw table through NumPy views.
+                "Updates": data[:, columns.index("UPDATE#")].copy(),
+                "Pulses": data[:, columns.index("PULSES")].copy(),
+                "Statuses": data[:, columns.index("STATUS")].copy(),
+                "Columns": columns,
+                "Correction Rows": corrections,
+                "Auxiliary Channels": {
+                    label: data[:, i].copy()
+                    for i, label in enumerate(columns)
+                    if i not in indices and label not in required
+                },
+                "Ignored Raw Counts": data[:, indices[ignored]].copy(),
+                "Ignored Detector IDs": tuple(
+                    label for label, flag in zip(detector_ids, ignored) if flag
+                ),
+            }
+        )
         self.file_meta, self.measurements = metadata, measurements
         return self
 
     def save(self, output_path: str) -> None:
-        raise NotImplementedError(
-            "IC Profiler PRM writing is not supported; convert to another format."
+        native = self.file_meta.get("IC Profiler", {})
+        required = {
+            "Columns",
+            "Correction Rows",
+            "Auxiliary Channels",
+            "Ignored Raw Counts",
+            "Ignored Detector IDs",
+            "Detector IDs",
+            "Leak Rates",
+            "Calibration",
+            "Ignored Detectors",
+        }
+        if not required.issubset(native) or len(self.measurements) != 4:
+            raise ValueError(
+                "PRM output requires four IC Profiler axes and retained acquisition metadata."
+            )
+        metadata = {
+            key: copy.deepcopy(value)
+            for key, value in self.file_meta.items()
+            if key != "IC Profiler"
+        }
+        if (
+            not metadata.get("Version")
+            or metadata.get("Collector Config", {}).get("Collector Model") != "IC PROFILER"
+            or metadata.get("Profiler Setup", {}).get("Orientation") != "Y Axis"
+            or _number(metadata.get("Detector Spacing", ""), "Detector Spacing") != 0.5
+            or any(
+                metadata.get(key, "false").lower() != "false"
+                for key in ("Concatenation", "Imported Data")
+            )
+        ):
+            raise ValueError(
+                "PRM writing requires a supported IC Profiler acquisition header and detector geometry."
+            )
+        columns = tuple(native["Columns"])
+        detector_ids = tuple(native["Detector IDs"])
+        expected_ids = {
+            f"{axis}{number}"
+            for axis in ("X", "Y", "PD", "ND")
+            for number in range(1, 66)
+            if axis == "Y" or number not in (32, 34)
+        }
+        if set(detector_ids) != expected_ids:
+            raise ValueError("PRM output requires the complete native IC Profiler detector layout.")
+        if (
+            len(set(columns)) != len(columns)
+            or len(set(detector_ids)) != len(detector_ids)
+            or any(label not in columns for label in detector_ids)
+        ):
+            raise ValueError("PRM detector IDs and columns must be unique and consistent.")
+        scans = {}
+        for scan in self.measurements:
+            scan.validate()
+            axis = scan.metadata.get("IC Profiler", {}).get("Axis")
+            if (
+                scan.acquisition_type not in self.supported_acquisition_types
+                or axis not in ("X", "Y", "PD", "ND")
+                or axis in scans
+            ):
+                raise ValueError(
+                    "PRM output requires one time series for each X, Y, PD and ND axis."
+                )
+            if (
+                scan.metadata.get("Dose Scale") != "corrected counts"
+                or scan.metadata.get("Cumulative") is not True
+            ):
+                raise ValueError("PRM output requires cumulative corrected counts.")
+            scans[axis] = scan
+        first = scans["X"]
+        nframes = len(first.times)
+        ticks = np.asarray(first.times) * 1e6
+        if not np.allclose(ticks, np.rint(ticks), rtol=0, atol=1e-6) or np.any(ticks < 0):
+            raise ValueError("PRM timestamps must resolve to nonnegative integral microseconds.")
+        ticks = np.rint(ticks)
+        data = np.empty((nframes, len(columns)))
+        for label, key in (("UPDATE#", "Updates"), ("PULSES", "Pulses"), ("STATUS", "Statuses")):
+            values = np.asarray(native.get(key))
+            if (
+                values.dtype.kind not in "biuf"
+                or values.shape != (nframes,)
+                or not np.isfinite(values).all()
+                or np.any(values < 0)
+                or np.any(values % 1)
+            ):
+                raise ValueError(f"PRM {key} must contain nonnegative integers matching frames.")
+            data[:, columns.index(label)] = values
+        if np.any(np.diff(data[:, columns.index("UPDATE#")]) < 1) or np.any(
+            np.diff(data[:, columns.index("PULSES")]) < 0
+        ):
+            raise ValueError("PRM update and pulse counters must increase cumulatively.")
+        data[:, columns.index("TIMETIC")] = ticks
+        for label in columns:
+            if label in detector_ids or label in ("UPDATE#", "TIMETIC", "PULSES", "STATUS"):
+                continue
+            values = np.asarray(native["Auxiliary Channels"].get(label))
+            if values.dtype.kind not in "biuf" or values.shape != (nframes,):
+                raise ValueError(f"PRM auxiliary channel {label} must match frames.")
+            data[:, columns.index(label)] = values
+        leaks = np.asarray(native["Leak Rates"])
+        calibration = np.asarray(native["Calibration"])
+        ignored = np.asarray(native["Ignored Detectors"])
+        for values in (leaks, calibration, ignored):
+            if (
+                values.dtype.kind not in "biuf"
+                or values.shape != (len(detector_ids),)
+                or not np.isfinite(values).all()
+            ):
+                raise ValueError(
+                    "PRM calibration arrays must match detector IDs and contain finite real values."
+                )
+        if np.any(calibration <= 0) or not np.isin(ignored, (0, 1)).all():
+            raise ValueError("PRM calibration must be positive and ignore flags must be 0 or 1.")
+        ignored = ignored.astype(bool)
+        if tuple(label for label, flag in zip(detector_ids, ignored) if flag) != tuple(
+            native["Ignored Detector IDs"]
+        ):
+            raise ValueError(
+                "PRM ignored detector IDs must match the retained ignored raw count columns."
+            )
+        ignored_raw = np.asarray(native["Ignored Raw Counts"])
+        if (
+            ignored_raw.dtype.kind not in "biuf"
+            or ignored_raw.shape != (nframes, int(ignored.sum()))
+            or not np.isfinite(ignored_raw).all()
+        ):
+            raise ValueError("PRM ignored raw counts must match frames and ignored detectors.")
+        expected_beam = _measurement(metadata)
+        depth = _length(metadata.get("Profiler Setup", {}).get("Buildup", ""), "Buildup")
+        if depth < 0:
+            raise ValueError("IC Profiler Buildup must be nonnegative.")
+        seen = set()
+        for axis, scan in scans.items():
+            expected_type = {
+                "X": MeasurementType.CrosslineProfile,
+                "Y": MeasurementType.InlineProfile,
+                "PD": MeasurementType.DiagonalProfile,
+                "ND": MeasurementType.DiagonalProfile,
+            }[axis]
+            if scan.type is not expected_type or not np.array_equal(scan.times, first.times):
+                raise ValueError(
+                    "PRM axes must have their native profile types and identical timestamps."
+                )
+            for field in ("radiation_type", "energy", "SSD", "field_size", "wedge_angle"):
+                if getattr(scan, field) != getattr(expected_beam, field):
+                    raise ValueError(
+                        f"PRM {field} must agree with the acquisition header; update file_meta too."
+                    )
+            for key in (
+                "FluenceMode",
+                "FieldsizeCorners[mm]",
+                "GantryAngle[deg]",
+                "CollimatorAngle[deg]",
+            ):
+                if scan.metadata.get(key) != expected_beam.metadata.get(key):
+                    raise ValueError(f"PRM {key} must agree with the acquisition header.")
+            ids = tuple(scan.metadata["IC Profiler"].get("Detector IDs", ()))
+            expected_ids = {label for label in detector_ids if label.startswith(axis)}
+            if (
+                len(ids) != scan.doses.shape[1]
+                or set(ids) != expected_ids
+                or len(set(ids)) != len(ids)
+            ):
+                raise ValueError(
+                    "PRM measurement detector IDs must match their native axis layout."
+                )
+            distance = np.array([int(label[len(axis) :]) - 33 for label in ids]) * 5.0
+            xyz = np.zeros((len(ids), 3))
+            xyz[:, 2] = depth
+            xyz[:, 0 if axis != "Y" else 1] = distance
+            if axis in ("PD", "ND"):
+                xyz[:, 1] = distance * (1 if axis == "PD" else -1)
+            if not np.allclose(np.column_stack(scan.reconstruct_xyz()), xyz, rtol=0, atol=1e-9):
+                raise ValueError(
+                    "PRM geometry must match the native detector positions and buildup."
+                )
+            for j, label in enumerate(ids):
+                i = detector_ids.index(label)
+                if ignored[i]:
+                    if not np.isnan(scan.doses[:, j]).all():
+                        raise ValueError("PRM ignored detectors must retain NaN corrected signals.")
+                    raw = ignored_raw[:, np.count_nonzero(ignored[:i])]
+                else:
+                    raw = scan.doses[:, j] / calibration[i] + ticks * leaks[i]
+                    if not np.isfinite(raw).all():
+                        raise ValueError("PRM detector counts must remain finite.")
+                data[:, columns.index(label)] = raw
+                seen.add(label)
+        if seen != set(detector_ids):
+            raise ValueError("PRM output requires every native detector.")
+        metadata["Total Pulses"] = f"{data[-1, columns.index('PULSES')]:.17g}"
+        metadata["Total Time"] = f"{ticks[-1] * 1e-6:.17g}"
+        lines = _header_output(metadata)
+        lines.extend(
+            ("Definitions:", *native.get("Definitions", ()), "\t".join(["TYPE", *columns]))
         )
+        factors = {"BIAS1": leaks, "Calibration": calibration, "IgnoreDet": ignored.astype(int)}
+        for label, original_cells in native["Correction Rows"].items():
+            cells = list(original_cells)
+            if label not in factors or len(cells) > len(columns):
+                raise ValueError("PRM correction rows are inconsistent with columns.")
+            cells.extend([""] * (len(columns) - len(cells)))
+            for name, value in zip(detector_ids, factors[label]):
+                cells[columns.index(name)] = f"{value:.17g}"
+            lines.append("\t".join([label, *cells]))
+        if set(native["Correction Rows"]) != set(factors):
+            raise ValueError("PRM output requires all calibration rows.")
+        lines.extend("\t".join(["Data:", *(f"{v:.17g}" for v in row)]) for row in data)
+        if any("\r" in line or "\n" in line for line in lines):
+            raise ValueError("PRM records must be single-line values.")
+        encoding = native.get("Encoding", "utf-8")
+        if encoding not in ("utf-8", "utf-8-sig", "cp1252"):
+            raise ValueError("PRM output encoding must be UTF-8, UTF-8 BOM or CP1252.")
+        payload = ("\r\n".join(lines) + "\r\n").encode(encoding)
+        Path(output_path).write_bytes(payload)
+
+
+def _header_output(metadata: dict) -> list[str]:
+    def fields(values):
+        result = []
+        secondary = {
+            key
+            for primary in _SECONDARY_FIELDS
+            if primary in values
+            for key in _SECONDARY_FIELDS[primary]
+        }
+        for key, value in values.items():
+            if key in secondary or isinstance(value, dict):
+                continue
+            if not isinstance(key, str) or not key or any(c in key for c in ":\t\r\n"):
+                raise ValueError("PRM header keys must be single-line labels.")
+            line = f"{key}:\t{value}"
+            for name in values:
+                if name in _SECONDARY_FIELDS.get(key, ()):
+                    line += f"\t{name}:\t{values[name]}"
+            result.append(line)
+        return result
+
+    # Multi Frame resets the parser's section context for acquisition totals.
+    roots = {key: value for key, value in metadata.items() if key not in _SECTIONS}
+    trailing = {
+        key: roots.pop(key)
+        for key in tuple(roots)
+        if key
+        in {
+            "Multi Frame",
+            "Total Pulses",
+            "Total Time",
+            "Detectors",
+            "Detector Spacing",
+            "Concatenation",
+            "Imported Data",
+        }
+    }
+    result = [f"Version:\t{roots.pop('Version')}", *fields(roots)]
+    for section, value in metadata.items():
+        if section in _SECTIONS:
+            result.append("\t" + section)
+            result.extend(fields(value))
+    multi = trailing.pop("Multi Frame", "true")
+    result.append(f"Multi Frame:\t{multi}")
+    result.extend(fields(trailing))
+    return result
 
 
 def _measurement(metadata: dict) -> Measurement:

@@ -75,8 +75,10 @@ last_volume = volume.doses[-1]    # (z, y, x)
 trace = volume.doses[:, 1, 0, 2]  # one voxel over time
 ```
 
-Both static and temporal dose volumes are supported by the shared model and
-deep-copy conversion. This does not add a volume file reader or writer.
+Both static and temporal dose volumes are supported by the shared model.
+Conversion preserves them when the target explicitly declares volume support.
+No current built-in format declares a volume writer; converting a volume to
+one warns and omits it.
 
 ## Read array acquisitions
 
@@ -103,8 +105,10 @@ integrated_raw_map = movie.doses[-1]  # already accumulated, then interpolated
 Both readers take only a file path and expose all acquired frames. IC Profiler
 retains the file's native cumulative, leakage-corrected and array-calibrated
 counts. Headers, calibration descriptors, detector labels, and acquisition
-counters remain in `file_meta`. Raw parsing tables and unused intermediate
-source arrays are released; the reader has no persistent `data` attribute. Acquisition-specific conventions are
+counters remain in `file_meta`. SRS MapCHECK retains every source table and
+movie channel in `file_meta["SRS MapCHECK"]`; IC Profiler retains auxiliary
+channels and ignored raw readings needed for native writing. Neither reader
+has a separate `data` attribute. Acquisition-specific conventions are
 described in [formats](formats.md).
 
 Frame selection and numerical transformations use ordinary NumPy:
@@ -127,7 +131,8 @@ remain available for caller-side selection/filtering. For example,
 `reader.file_meta["IC Profiler"]["Pulses"]` contains cumulative pulse counts,
 aligned with every Measurement's `times`; `Updates` and `Statuses` describe
 the same updates. SRS MapCHECK movies use the equivalent metadata under
-`file_meta["SRS MapCHECK"]`. No raw-table column indices are needed.
+`file_meta["SRS MapCHECK"]`. Common array access does not require raw-table
+column indices; native source labels/data remain available in metadata.
 
 `doses` is the common signal array; its name does not imply a dose unit or
 calibration. Readers document the scale and preserve it in metadata. In
@@ -148,18 +153,60 @@ selected 1D arrays to [profile analysis](profiles.md) explicitly.
 
 ## Conversion and curve export
 
-`BeamData.convert()` deep-copies shared measurements, including arbitrary
-spatial/time dimensions, axes, coordinates, times, and metadata. The target's
-`save()` then applies its supported output schema.
+`BeamData.convert()` checks each measurement against the target's
+`supported_acquisition_types`, `supported_measurement_types` and
+`supported_radiation_types`. These are public immutable class attributes:
 
-IBA, SNC tank text, and RayStation curve writers support only static 1D
+```python
+from beamio.rfa import PTWMCC
+
+print(PTWMCC.supported_acquisition_types)
+print(PTWMCC.supported_measurement_types)
+print(PTWMCC.supported_radiation_types)
+```
+
+Each unsupported measurement is omitted with a `UserWarning` naming its source
+index, target and unsupported types. Supported measurements retain their order
+and all arrays/metadata are deep-copied. The original reader is unchanged.
+If every measurement is omitted, the returned target has no measurements;
+file metadata is still copied. Current formats explicitly include `None` in
+their radiation capabilities so undeclared radiation remains undeclared.
+
+| Target | Acquisition types | Measurement types | Radiation types |
+| --- | --- | --- | --- |
+| IBA, SNC tank text, RayStation | Static | All four 1D scan types | Photon, electron, proton, undeclared |
+| PTW MCC | Static | Depth, crossline, inline | Photon, electron, undeclared |
+| IC Profiler | TimeSeries | Crossline, inline, diagonal | Photon, electron, proton, undeclared |
+| SRS MapCHECK | Static, TimeSeries | DosePlane | Photon, undeclared |
+
+Conversion checks declared types; it does not ensure a complete native
+acquisition or correct geometric/array shapes. The target's `save()` validates
+those details, including required vendor metadata. A compatible enum combination
+therefore does not guarantee an unrelated curve can become a native acquisition.
+
+IBA, SNC tank text, PTW MCC, and RayStation curve writers support only static 1D
 measurements. They reject planes, volumes, and time series before writing any
 output. They do not flatten arrays or choose a frame/row automatically.
+MCC further requires an axial depth/crossline/inline scan. PRM writes its four
+native profile time series; SRS MapCHECK writes its static or temporal plane.
+Both native acquisition writers require the source-specific metadata described
+in [formats](formats.md). SRS movie output stores physical detector sites;
+interpolated pixels are omitted from native movie output, including any edits
+to those pixels, and reconstructed on reload from the physical detector values.
+Measured SRS tables are retained independently: saving an edited final
+dose map does not recalculate the intermediate vendor correction tables.
 
-Select the intended spatial/time samples explicitly when building a curve:
+Select the intended spatial/time samples and assign the curve to the source
+**before** calling `convert()`; unsupported planes/time series will already
+have been dropped afterward. For example:
 
 ```python
 from copy import deepcopy
+from beamio.common import AcquisitionType, MeasurementType
+from beamio.rfa import PTWMCC, SRSMapCheck
+
+reader = SRSMapCheck("measurement.smcm").parse()
+movie = reader.measurements[0]
 
 curve = deepcopy(movie)
 curve.type = MeasurementType.CrosslineProfile
@@ -171,6 +218,12 @@ curve.coordinates = movie.coordinates[22].copy()
 curve.startpoint = tuple(curve.coordinates[0])
 curve.endpoint = tuple(curve.coordinates[-1])
 curve.validate()
+
+# Build an independent source with only the selected curve, then convert.
+selected = deepcopy(reader)
+selected.measurements = [curve]
+converted = selected.convert(PTWMCC)
+converted.save("selected-row.mcc")
 ```
 
 SRS MapCHECK coordinates remain device-local; Z=0 denotes the detector plane,

@@ -10,8 +10,10 @@ Tests follow the production area they exercise:
 | `rfa/test_icprofiler.py` | IC Profiler PRM frames, leakage/calibration, detector gaps, diagonal geometry, metadata, encodings, and validation |
 | `rfa/test_icprofiler_series.py` | Native cumulative Measurements, caller-side NumPy differencing/scaling, timestamp/counter preservation, raw-table release, and profile analysis |
 | `rfa/test_snc.py` | SNC text/XML parsing, layer selection, units, metadata, and text writing |
-| `rfa/test_srsmapcheck.py` | Shared static/temporal dose planes, raw movies, penumbra/perimeter interpolation, measured-sample preservation, detector geometry, counters, raw-table release, headers, revision warnings, and malformed acquisitions |
+| `rfa/test_srsmapcheck.py` | Shared static/temporal dose planes, raw movies, penumbra/perimeter interpolation, measured-sample preservation, full source-record retention in metadata, headers, revision warnings, and malformed acquisitions |
+| `rfa/test_native_writers.py` | MCC axial/reference exports, PRM acquisition reconstruction, complete SRS tables/channels/correction cells, CRC-32, edited signals, encoding preservation, and rejection before touching destinations |
 | `common/test_measurement.py` | Static/temporal shape contracts for profiles, planes and volumes; axes, timestamps, XYZ geometry, and validation |
+| `common/test_beamdata.py` | Declared format capabilities, conversion filtering/warnings, source isolation, empty results, volume-capable custom targets, and native metadata aliases |
 | `common/test_profile.py` | Public single-profile helpers, signal thresholds, repeated coordinates, missing values, and validation |
 | `tps/test_raystation.py` | RayStation writing, parsing, metadata, and round trips |
 | `integration/test_conversion.py` | Static curve conversions, explicit array selection, volume/time-series copy isolation, and writer-owned layout checks, shared validation, and rejection without partial writes |

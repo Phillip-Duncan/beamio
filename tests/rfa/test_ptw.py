@@ -197,9 +197,9 @@ def test_reject_incomplete_or_ambiguous_export(tmp_path, text, match):
         load(tmp_path, text)
 
 
-def test_mcc_save_is_explicitly_unsupported_and_does_not_touch_destination(tmp_path):
+def test_empty_mcc_save_does_not_touch_destination(tmp_path):
     destination = tmp_path / "existing.mcc"
     destination.write_text("original")
-    with pytest.raises(NotImplementedError, match="MCC writing"):
+    with pytest.raises(ValueError, match="at least one measurement"):
         PTWMCC("").save(destination)
     assert destination.read_text() == "original"

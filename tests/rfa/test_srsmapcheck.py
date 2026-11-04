@@ -28,7 +28,7 @@ def test_final_dose_is_one_shared_static_plane_without_recalibration(tmp_path):
     np.testing.assert_array_equal(plane.axes[1], X)
     np.testing.assert_array_equal(plane.axes[0], Y)
     np.testing.assert_array_equal(plane.doses, DOSE)
-    assert "SRS MapCHECK" not in beam.file_meta
+    assert "Dose Interpolated" in beam.file_meta["SRS MapCHECK"]["Tables"]
     assert plane.radiation_type is RadiationType.PHOTON
     assert plane.energy == 6
     assert plane.metadata["FluenceMode"] == "FFF"
@@ -481,7 +481,7 @@ def test_reparse_replaces_data_and_failed_reparse_preserves_previous_acquisition
     path.write_text(measured_export())
     beam.parse()
     assert len(beam.measurements) == 1
-    assert "SRS MapCHECK" not in beam.file_meta
+    assert "Data" not in beam.file_meta["SRS MapCHECK"]
     assert beam.measurements[0].doses.shape == (3, 5)
     path.write_text("invalid data")
     with pytest.raises(ValueError):
@@ -489,13 +489,15 @@ def test_reparse_replaces_data_and_failed_reparse_preserves_previous_acquisition
     np.testing.assert_array_equal(beam.measurements[0].doses, DOSE)
 
 
-def test_save_is_explicitly_unsupported(tmp_path):
+def test_save_writes_the_final_dose_table(tmp_path):
     beam = read_export(tmp_path)
-    with pytest.raises(NotImplementedError, match="writing"):
-        beam.save(tmp_path / "output.txt")
+    output = tmp_path / "output.txt"
+    beam.save(output)
+    actual = SRSMapCheck(output).parse()
+    np.testing.assert_array_equal(actual.measurements[0].doses, DOSE)
 
 
-def test_movie_raw_table_is_released_after_parsing(tmp_path, monkeypatch):
+def test_movie_raw_table_is_retained_only_in_metadata(tmp_path, monkeypatch):
     references = []
     original_movie = srsmapcheck_module._movie
 
@@ -507,13 +509,13 @@ def test_movie_raw_table_is_released_after_parsing(tmp_path, monkeypatch):
     monkeypatch.setattr(srsmapcheck_module, "_movie", observe_movie)
     beam = read_export(tmp_path, movie_export())
     gc.collect()
-    assert references[0]() is None
+    assert references[0]() is beam.file_meta["SRS MapCHECK"]["Data"]
     assert set(vars(beam)) == {"file_path", "measurements", "file_meta"}
     np.testing.assert_array_equal(beam.file_meta["SRS MapCHECK"]["Pulses"], [0, 4])
     assert beam.measurements[0].doses.shape == (2, 3, 5)
 
 
-def test_unused_exported_tables_are_released_after_parsing(tmp_path, monkeypatch):
+def test_all_exported_tables_are_retained_in_metadata(tmp_path, monkeypatch):
     references = []
     original_grids = srsmapcheck_module._grids
 
@@ -527,6 +529,16 @@ def test_unused_exported_tables_are_released_after_parsing(tmp_path, monkeypatch
     monkeypatch.setattr(srsmapcheck_module, "_grids", observe_grids)
     beam = read_export(tmp_path)
     gc.collect()
-    assert references and all(reference() is None for reference in references)
+    assert references and all(reference() is not None for reference in references)
+    assert set(beam.file_meta["SRS MapCHECK"]["Tables"]) == {
+        "Raw Counts",
+        "Dose Counts",
+        "Data Flags",
+        "Interpolated",
+        "Dose Interpolated",
+    }
+    assert (
+        beam.file_meta["SRS MapCHECK"]["Tables"]["Dose Interpolated"] is beam.measurements[0].doses
+    )
     assert set(vars(beam)) == {"file_path", "measurements", "file_meta"}
     np.testing.assert_array_equal(beam.measurements[0].doses, DOSE)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import warnings
+import copy
+import zlib
 
 import numpy as np
 
@@ -193,6 +195,7 @@ def _movie(lines: list[str], info: dict, nrows: int, ncols: int):
             "SRS MapCHECK movie detector geometry differs from declared grid dimensions."
         )
     corrections: dict[str, np.ndarray] = {}
+    correction_rows: dict[str, tuple[str, ...]] = {}
     rows: list[list[float]] = []
     checksum = None
     for index, line in enumerate(content[3:]):
@@ -206,6 +209,7 @@ def _movie(lines: list[str], info: dict, nrows: int, ncols: int):
             if rows or marker in corrections or len(cells) != len(labels):
                 raise ValueError(f"Unexpected, duplicate, or incomplete SRS MapCHECK {marker} row.")
             corrections[marker] = np.array([_number(cells[i + 1], marker) for i in indices])
+            correction_rows[marker] = tuple(cells[1:])
         elif marker == "Data:":
             if len(cells) != len(labels):
                 raise ValueError("SRS MapCHECK movie Data row width differs from TYPE columns.")
@@ -240,7 +244,11 @@ def _movie(lines: list[str], info: dict, nrows: int, ncols: int):
             raise ValueError("SRS MapCHECK movie Total Time requires ms units.")
         if _number(parts[0], "Total Time") != data[-1, columns.index("TIMETIC")]:
             raise ValueError("SRS MapCHECK movie Total Time differs from final TIMETIC.")
-    return x, y, columns, data, indices, coordinates, corrections, checksum
+    records = {
+        "Coordinate Rows": (tuple(x_cells[1:]), tuple(y_cells[1:])),
+        "Correction Rows": correction_rows,
+    }
+    return x, y, columns, data, indices, coordinates, corrections, checksum, records
 
 
 def _interpolate_movie(frames: np.ndarray, x: np.ndarray, y: np.ndarray) -> None:
@@ -295,23 +303,32 @@ class SRSMapCheck(BeamData):
 
     Acquisition counters, detector geometry and correction vectors belong
     to ``file_meta["SRS MapCHECK"]`` for movies. Original headers remain in
-    file_meta once. Raw tables and unused intermediate grids are not retained.
+    file_meta once. All source grids, movie channels and correction cells are
+    retained in file_meta["SRS MapCHECK"] for native writing.
     File revision A is
     validated; other revisions are attempted with a UserWarning.
     """
 
+    supported_acquisition_types = frozenset({AcquisitionType.Static, AcquisitionType.TimeSeries})
+    supported_measurement_types = frozenset({MeasurementType.DosePlane})
+    supported_radiation_types = frozenset({None, RadiationType.PHOTON})
+
     def parse(self) -> SRSMapCheck:
         path = Path(self.file_path)
+        raw = path.read_bytes()
         try:
-            text = path.read_text(encoding="utf-8-sig")
+            text = raw.decode("utf-8-sig")
+            encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8"
         except UnicodeDecodeError:
-            text = path.read_text(encoding="cp1252")
+            text = raw.decode("cp1252")
+            encoding = "cp1252"
         lines = text.splitlines()
         while lines and not lines[0].strip():
             lines.pop(0)
         if not lines:
             raise ValueError("SRS MapCHECK file is empty.")
         metadata, index = _header(lines)
+        native = {"Header Lines": tuple(lines[:index]), "Encoding": encoding}
         if metadata.get("Device Config", {}).get("Model") != "1179 SRS MapCHECK":
             raise ValueError("Expected SRS MapCHECK Model: 1179 SRS MapCHECK.")
         revision = metadata.get("Header", {}).get("File Revision")
@@ -332,6 +349,12 @@ class SRSMapCheck(BeamData):
         if metadata["File Type"] == "Measured File":
             geometry, tables, checksum = _grids(lines[index:], nrows, ncols)
             x, y, _, _ = geometry
+            native.update(
+                {
+                    "Tables": tables,
+                    "Grid": {"X": x, "Y": y, "Rows": geometry[2], "Columns": geometry[3]},
+                }
+            )
             scan.doses = tables["Dose Interpolated"]
             source, scale, interpolation = "Dose Interpolated", "exported dose", "vendor-exported"
         else:
@@ -344,16 +367,22 @@ class SRSMapCheck(BeamData):
                 detector_coordinates,
                 corrections,
                 checksum,
+                records,
             ) = _movie(lines[index:], info, nrows, ncols)
             detector_indices = np.asarray(indices, dtype=int)
-            metadata["SRS MapCHECK"] = {
-                "Detector IDs": tuple(columns[i] for i in indices),
-                "Detector Coordinates": detector_coordinates,
-                "Corrections": corrections,
-                "Updates": data[:, columns.index("UPDATE#")].copy(),
-                "Pulses": data[:, columns.index("PULSES")].copy(),
-                "Statuses": data[:, columns.index("STATUS")].copy(),
-            }
+            native.update(
+                {
+                    "Detector IDs": tuple(columns[i] for i in indices),
+                    "Detector Coordinates": detector_coordinates,
+                    "Corrections": corrections,
+                    "Columns": columns,
+                    "Data": data,
+                    "Updates": data[:, columns.index("UPDATE#")],
+                    "Pulses": data[:, columns.index("PULSES")],
+                    "Statuses": data[:, columns.index("STATUS")],
+                    **records,
+                }
+            )
             frames = np.full((len(data), nrows, ncols), np.nan)
             rows = np.searchsorted(-y, -detector_coordinates[:, 1])
             grid_columns = np.searchsorted(x, detector_coordinates[:, 0])
@@ -369,6 +398,7 @@ class SRSMapCheck(BeamData):
             )
         if checksum is not None:
             metadata["Checksum"] = checksum  # Retained vendor footer, not verified.
+        metadata["SRS MapCHECK"] = native
         scan.axes = (y, x)
         yy, xx = np.meshgrid(y, x, indexing="ij")
         scan.coordinates = np.stack((xx, yy, np.zeros_like(xx)), axis=-1)
@@ -396,4 +426,227 @@ class SRSMapCheck(BeamData):
         return self
 
     def save(self, output_path: str) -> None:
-        raise NotImplementedError("SRS MapCHECK writing is not implemented.")
+        if len(self.measurements) != 1:
+            raise ValueError("SRS MapCHECK output requires one dose-plane measurement.")
+        scan = self.measurements[0]
+        if scan.type not in self.supported_measurement_types:
+            raise ValueError("SRS MapCHECK output requires a dose plane.")
+        scan.validate()
+        native = self.file_meta.get("SRS MapCHECK", {})
+        if not native:
+            raise ValueError("SRS MapCHECK writing requires retained native acquisition metadata.")
+        metadata = {
+            key: copy.deepcopy(value)
+            for key, value in self.file_meta.items()
+            if key != "SRS MapCHECK"
+        }
+        y, x = scan.axes
+        yy, xx = np.meshgrid(y, x, indexing="ij")
+        xyz = np.stack((xx, yy, np.zeros_like(xx)), axis=-1)
+        if scan.coordinates is not None and not np.allclose(
+            scan.coordinates, xyz, rtol=0, atol=1e-9
+        ):
+            raise ValueError(
+                "SRS MapCHECK coordinates must describe the device-local XY grid at Z=0."
+            )
+        info = metadata.setdefault("Measurement Info", {})
+        info["Row Counts in 2D"], info["Col Counts in 2D"] = str(len(y)), str(len(x))
+        if scan.radiation_type not in self.supported_radiation_types:
+            raise ValueError("SRS MapCHECK output supports photon measurements.")
+        if scan.energy is None:
+            info.pop("Beam Energy", None)
+        else:
+            if not np.isfinite(scan.energy) or scan.energy <= 0:
+                raise ValueError("SRS MapCHECK Beam Energy must be finite and positive.")
+            mode = scan.metadata.get("FluenceMode", "")
+            info["Beam Energy"] = f"{scan.energy:.17g}" + (f"\t{mode}" if mode else "")
+        if scan.acquisition_type is AcquisitionType.Static:
+            if "Tables" not in native or "Grid" not in native:
+                raise ValueError(
+                    "SRS MapCHECK measured writing requires retained tables and grid identifiers."
+                )
+            metadata["File Type"] = "Measured File"
+            tables = dict(native["Tables"])
+            tables["Dose Interpolated"] = np.asarray(scan.doses)
+            grid = native["Grid"]
+            rows, columns = np.asarray(grid["Rows"]), np.asarray(grid["Columns"])
+            body = []
+            for name, values in tables.items():
+                values = np.asarray(values)
+                if (
+                    values.dtype.kind not in "biuf"
+                    or values.shape != scan.spatial_shape
+                    or not np.isfinite(values).all()
+                ):
+                    raise ValueError(
+                        f"SRS MapCHECK {name} must be a finite table matching the dose grid."
+                    )
+                if not isinstance(name, str) or any(c in name for c in "\r\n\t"):
+                    raise ValueError("SRS MapCHECK table names must be single-line labels.")
+                if rows.shape != (len(y),) or columns.shape != (len(x),):
+                    raise ValueError("SRS MapCHECK grid identifiers must match the dose grid.")
+                body.extend((name, "Ycm\tROW"))
+                body.extend(
+                    "\t".join(
+                        [f"{position / 10:.17g}", f"{row:.17g}", *(f"{v:.17g}" for v in sample)]
+                    )
+                    for position, row, sample in zip(y, rows, values)
+                )
+                body.extend(
+                    (
+                        "\tCOL\t" + "\t".join(f"{v:.17g}" for v in columns),
+                        "\tXcm\t" + "\t".join(f"{v / 10:.17g}" for v in x),
+                        "",
+                    )
+                )
+            _grids(body, len(y), len(x))
+        else:
+            metadata["File Type"] = "Raw Movie Data"
+            body = _movie_output(scan, native, info)
+            _movie(body, info, len(y), len(x))
+        header = _header_output(metadata)
+        # Validate the emitted header as well as the source tables before writing.
+        parsed, _ = _header(header + body)
+        if parsed.get("Device Config", {}).get("Model") != "1179 SRS MapCHECK" or not parsed.get(
+            "Header", {}
+        ).get("File Revision"):
+            raise ValueError("SRS MapCHECK output requires its model and file revision headers.")
+        encoding = native.get("Encoding", "utf-8")
+        if encoding not in ("utf-8", "utf-8-sig", "cp1252"):
+            raise ValueError("SRS MapCHECK output encoding must be UTF-8, UTF-8 BOM or CP1252.")
+        payload = ("\r\n".join(header + body) + "\r\n").encode(encoding)
+        checksum = f"{zlib.crc32(payload):08X}\r\n".encode("ascii")
+        Path(output_path).write_bytes(payload + checksum)
+
+
+def _header_output(metadata: dict) -> list[str]:
+    lines = [f"{_SIGNATURE}\t{metadata['File Type']}", ""]
+    for section, fields in metadata.items():
+        label = "Header:" if section == "Header" else section
+        if label not in _SECTIONS:
+            continue
+        lines.append(label if section == "Header" else "\t" + label)
+        for key, value in fields.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or any(c in key for c in ":\r\n\t")
+                or any(c in str(value) for c in "\r\n")
+            ):
+                raise ValueError(
+                    "SRS MapCHECK header fields must have single-line keys and values."
+                )
+            if key == "Time" and "Date" in fields:
+                continue
+            suffix = f"\tTime:\t{fields['Time']}" if key == "Date" and "Time" in fields else ""
+            lines.append(f"{key}:\t{value}{suffix}")
+        lines.append("")
+    return lines
+
+
+def _movie_output(scan: Measurement, native: dict, info: dict) -> list[str]:
+    required = {
+        "Columns",
+        "Data",
+        "Detector IDs",
+        "Detector Coordinates",
+        "Coordinate Rows",
+        "Correction Rows",
+        "Corrections",
+    }
+    if not required.issubset(native):
+        raise ValueError(
+            "SRS MapCHECK movie writing requires retained columns, data and correction rows."
+        )
+    columns = tuple(native["Columns"])
+    original = np.asarray(native["Data"])
+    if (
+        original.dtype.kind not in "biuf"
+        or original.shape != (len(scan.times), len(columns))
+        or not np.isfinite(original).all()
+    ):
+        raise ValueError("Retained SRS MapCHECK movie data must match times and columns.")
+    # Measurement edits must not inherit an integer or lower-precision source
+    # dtype. Keep the retained native metadata unchanged.
+    data = original.astype(np.float64, copy=True)
+    ids = tuple(native["Detector IDs"])
+    if (
+        len(set(columns)) != len(columns)
+        or len(set(ids)) != len(ids)
+        or any(label not in columns for label in ids)
+    ):
+        raise ValueError("SRS MapCHECK detector IDs must identify unique movie columns.")
+    xy = np.asarray(native["Detector Coordinates"])
+    if xy.shape != (len(ids), 2) or xy.dtype.kind not in "biuf" or not np.isfinite(xy).all():
+        raise ValueError("SRS MapCHECK detector coordinates must match detector IDs.")
+    y, x = scan.axes
+    rows = np.searchsorted(-y, -xy[:, 1])
+    cols = np.searchsorted(x, xy[:, 0])
+    if (
+        np.any(rows >= len(y))
+        or np.any(cols >= len(x))
+        or not np.allclose(x[cols], xy[:, 0], rtol=0, atol=1e-9)
+        or not np.allclose(y[rows], xy[:, 1], rtol=0, atol=1e-9)
+    ):
+        raise ValueError(
+            "Movie detector coordinates must coincide with the measurement axes (X increasing, Y decreasing)."
+        )
+    indices = [columns.index(label) for label in ids]
+    values = np.asarray(scan.doses)[:, rows, cols]
+    if not np.isfinite(values).all():
+        raise ValueError("SRS MapCHECK physical detector counts must be finite.")
+    data[:, indices] = values
+    # Interpolated pixels are not native detector channels. Their values,
+    # including caller edits, are intentionally omitted from movie output.
+    ticks = np.asarray(scan.times) * 1e3
+    if not np.allclose(ticks, np.rint(ticks), rtol=0, atol=1e-6):
+        raise ValueError("SRS MapCHECK timestamps must resolve to integral milliseconds.")
+    data[:, columns.index("TIMETIC")] = np.rint(ticks)
+    for label, key in (("UPDATE#", "Updates"), ("PULSES", "Pulses"), ("STATUS", "Statuses")):
+        vector = np.asarray(native.get(key))
+        if vector.dtype.kind not in "biuf" or vector.shape != (len(data),):
+            raise ValueError(f"SRS MapCHECK {key} must match movie frames.")
+        data[:, columns.index(label)] = vector
+    info.update(
+        {
+            "Update Count": str(len(data)),
+            "Total Pulses": f"{data[-1, columns.index('PULSES')]:.17g}",
+            "Total Time": f"{data[-1, columns.index('TIMETIC')]:.17g}\tms",
+        }
+    )
+    if any(
+        not isinstance(cell, str) or any(c in cell for c in "\r\n\t")
+        for cells in native["Coordinate Rows"]
+        for cell in cells
+    ):
+        raise ValueError("SRS MapCHECK coordinate cells must be single-line values.")
+    coordinate_rows = [list(row) for row in native["Coordinate Rows"]]
+    if len(coordinate_rows) != 2:
+        raise ValueError("SRS MapCHECK movie requires two coordinate rows.")
+    for axis, cells in enumerate(coordinate_rows):
+        cells.extend([""] * (len(columns) - len(cells)))
+        if len(cells) != len(columns):
+            raise ValueError("SRS MapCHECK coordinate row width differs from columns.")
+        for index, value in zip(indices, xy[:, axis]):
+            cells[index] = f"{value:.17g}"
+    lines = [
+        "\t".join([label, *cells]) for label, cells in zip(("X (mm)", "Y (mm)"), coordinate_rows)
+    ]
+    lines.append("\t".join(["TYPE", *columns]))
+    for label, original_cells in native["Correction Rows"].items():
+        cells = list(original_cells)
+        if any(not isinstance(cell, str) or any(c in cell for c in "\r\n\t") for cell in cells):
+            raise ValueError("SRS MapCHECK correction cells must be single-line values.")
+        factors = np.asarray(native["Corrections"].get(label))
+        if (
+            len(cells) != len(columns)
+            or factors.dtype.kind not in "biuf"
+            or factors.shape != (len(ids),)
+            or not np.isfinite(factors).all()
+        ):
+            raise ValueError(f"SRS MapCHECK {label} correction row is inconsistent.")
+        for index, value in zip(indices, factors):
+            cells[index] = f"{value:.17g}"
+        lines.append("\t".join([label, *cells]))
+    lines.extend("\t".join(["Data:", *(f"{value:.17g}" for value in row)]) for row in data)
+    return lines

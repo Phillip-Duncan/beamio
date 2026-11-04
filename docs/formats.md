@@ -5,9 +5,9 @@
 | IBA myQA Accept 6 ASCII | `beamio.rfa.IBAAccept6` | `.asc` | `BeamDataFactory.from_file(path)` |
 | SNC SunSCAN/SunDOSE text | `beamio.rfa.SNCSunScan` | `.snctxt` | `BeamDataFactory.from_file(path)` |
 | SNC SunDOSE XML (read only) | `beamio.rfa.SNCSunScan` | `.sncxml` | `BeamDataFactory.from_file(path)` |
-| PTW Mephysto MCC water-tank scans (read only) | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
-| SNC IC PROFILER acquisitions (read only, version 25 validated) | `beamio.rfa.ICProfiler` | `.prm` | `BeamDataFactory.from_file(path)` |
-| SNC SRS MapCHECK dose maps and raw movies (read only, revision A validated) | `beamio.rfa.SRSMapCheck` | `.txt`, `.smcm` | `BeamDataFactory.from_file(path)` |
+| PTW Mephysto MCC water-tank scans | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
+| SNC IC PROFILER acquisitions (version 25 validated) | `beamio.rfa.ICProfiler` | `.prm` | `BeamDataFactory.from_file(path)` |
+| SNC SRS MapCHECK dose maps and raw movies (revision A validated) | `beamio.rfa.SRSMapCheck` | `.txt`, `.smcm` | `BeamDataFactory.from_file(path)` |
 | RayStation 2025+ measured-curves CSV | `beamio.tps.raystation.Raystation` | `.csv` | Use the class explicitly |
 
 `BeamDataFactory.is_supported_file(path)` checks the extension only; `from_file`
@@ -124,7 +124,7 @@ available as `metadata["PTW Scan Number"]`, and file header values are stored in
 Automatic detection checks the first nonblank line for `BEGIN_SCAN_DATA` before
 other text signatures, so format names in scan comments do not change the reader.
 
-MCC writing, detector-array measurements (Starcheck/Octavius), and diagonal or
+Detector-array measurements (Starcheck/Octavius), and diagonal or
 angled MCC scans are not implemented. These inputs raise errors instead of
 being treated as ordinary axial scans. Incomplete blocks, mismatched or
 duplicate scan numbers, malformed samples, and duplicate metadata keys are
@@ -134,6 +134,18 @@ The implementation was checked against the CC-Export V1.9 water-tank examples
 in [pymcc](https://github.com/tbezo/pymcc). It uses beamio's own parser and adds
 no runtime dependencies. Other MCC variants, including BEAMSCAN exports, have
 not yet been verified.
+
+### Writing MCC
+
+`scans.save("export.mcc")` writes static depth, crossline and inline scans,
+including explicitly constructed Measurements or conversions from other
+supported curve readers. It exports the shared positions/doses and optional
+`PTW Reference` column, preserves scalar native header values and scan IDs,
+and updates energy, SSD, field size, wedge, modality and axial geometry from
+the shared model. Missing scan IDs use one-based measurement order; explicit
+IDs must be unique. Sample order, duplicate positions and non-finite signals
+are retained. Non-axial motion, temporal scans, planes and volumes raise
+errors. Output uses CC-Export V1.9 headers by default, UTF-8 and CRLF.
 
 ## SNC IC Profiler
 
@@ -202,19 +214,25 @@ a Wedge type of None gives zero wedge angle even if a stale angle is present.
 
 `file_meta` holds the original headers, plus `file_meta["IC Profiler"]` with
 `Detector IDs`, `Leak Rates`, `Calibration`, `Ignored Detectors`, `Updates`,
-`Pulses` and `Statuses`. Counter vectors align with Measurement.times; pulse
+`Pulses` and `Statuses`. Native writing also retains `Columns`, full
+`Correction Rows` (including non-detector cells), `Definitions`, `Encoding`,
+`Auxiliary Channels`, `Ignored Detector IDs`, and `Ignored Raw Counts`.
+Auxiliary channels are arrays keyed by their native column labels. Ignored
+raw counts have shape `(T, number_of_ignored_detectors)` in the named order.
+Counter vectors align with Measurement.times; pulse
 counts retain their native cumulative convention. These vectors are independent
 copies, so they do not keep the raw parsing table alive through NumPy views.
 
 Each Measurement contains its signal/geometry and relevant metadata:
 `Cumulative`, `Dose Scale`, and its `IC Profiler` axis and detector IDs.
-There are no full header copies, source-column indices, or duplicate raw
-count arrays. Raw tables and unused auxiliary channels are released after
-parsing; the reader has no persistent `data` attribute. `convert()` copies
+There are no full header copies on each Measurement or duplicate non-ignored
+raw count arrays. The full raw parsing table is released after auxiliary and
+ignored readings have been retained in metadata; the reader has no separate
+`data` attribute. `convert()` copies
 the shared measurements and metadata.
 
-Other orientations, detector layouts/spacings, concatenated/imported
-acquisitions, and PRM writing are not implemented. Missing calibration rows,
+Other orientations, detector layouts/spacings, and concatenated/imported
+acquisitions are not implemented. Missing calibration rows,
 truncated Data rows, non-finite counts/factors, invalid ignore flags, duplicate
 columns/headers, and non-cumulative update/pulse counters raise errors. UPDATE#
 defines frame order; TIMETIC is retained as exported, including the small final
@@ -270,6 +288,32 @@ static Measurement; see [measurement arrays](measurements.md) for selection
 and export examples. The former vendor-specific time-series/result classes
 and frame/analysis methods are replaced by these shared arrays.
 
+### Writing PRM
+
+```python
+acquisition = ICProfiler("measurement.prm").parse()
+acquisition.measurements[0].doses[:, 0] += 1
+acquisition.save("edited.prm")
+```
+
+PRM output requires the four native X/Y/PD/ND time series and their retained
+acquisition metadata. The writer inverts the embedded array calibration and
+leakage correction to reconstruct detector counts from Measurement.doses.
+Ignored raw readings, auxiliary channels, calibration cells and definitions
+are retained independently and restored. Timestamps come from Measurement.times
+and must resolve to integral microseconds; all axes must have identical times.
+Counter vectors and auxiliary channels must match the frame count. Native
+clock anomalies are retained. Totals are updated from the final time/pulse
+counter. Conversion from unrelated static curves cannot fabricate this data.
+
+Beam/setup fields must agree across the four Measurements and with the
+native acquisition headers. When changing those fields, update the headers
+in file_meta too. Detector IDs/geometry retain the supported native layout;
+ignored IDs identify the columns in `Ignored Raw Counts`. The complete raw
+parsing table is not duplicated. Output preserves the detected UTF-8,
+UTF-8 BOM or CP1252 encoding and uses CRLF. Numerical output preserves
+double precision; inverse calibration may introduce floating-point rounding.
+
 ## SNC SRS MapCHECK
 
 `SRSMapCheck(path).parse()` reads model 1179 measured text exports and raw
@@ -278,7 +322,7 @@ and frame/analysis methods are replaced by these shared arrays.
 `Raw Movie Data` label, independently of extension. Revision A is validated;
 other nonempty revisions are attempted with a `UserWarning` and the same
 structural checks. UTF-8, UTF-8 BOM, and CP1252 text are supported. DICOM plans
-and reference dose files, and SRS MapCHECK writing, are not implemented.
+and reference dose files are not implemented.
 
 ### Measured maps
 
@@ -304,8 +348,10 @@ calibration, raw/corrected counts, Dose Counts, Data Flags and interpolated
 tables. Tables require complete rows/columns, finite values, monotonic axes,
 and consistent geometry. Dose Interpolated is mandatory; missing or truncated
 final data raises an error instead of falling back to an intermediate table.
-Only the final signal array is retained; unused intermediate grids are
-released and are not exposed through a separate reader data container.
+Every table is retained in `file_meta["SRS MapCHECK"]["Tables"]`, including
+intermediate counts, calibration and flags. The final `Dose Interpolated`
+array also serves as Measurement.doses, without allocating a duplicate.
+`Grid` retains X/Y axes in mm and the original `Rows`/`Columns` identifiers.
 
 Xcm/Ycm convert to millimetres, preserving table order. Supplied grids are
 45 by 45, with increasing X, decreasing Y, and 1.75 mm grid increments.
@@ -387,13 +433,17 @@ original sample sites. Sun Nuclear discusses detector spacing and sampling
 limits in [Stereotactic QA Arrays: Resolution and Detector Spacing](https://www.sunnuclear.com/about/news/stereotactic-qa-arrays-resolution-and-detector-spacing).
 
 Movie `file_meta["SRS MapCHECK"]` contains `Detector IDs`, `Detector Coordinates`
-in XY mm, `Corrections`, `Updates`, `Pulses` and `Statuses`. Correction metadata
+in XY mm, `Corrections`, `Updates`, `Pulses` and `Statuses`. It also retains
+`Columns` and the complete numeric native `Data` table, including every
+thermistor, angle, reference, EIB and other auxiliary channel. `Coordinate Rows`
+and `Correction Rows` preserve all native cells, including blanks and
+non-detector correction entries. Correction metadata
 retains available Background, Calibration(AP), Calibration(PA), AP Open,
 PA Open and DetectorFlags vectors in detector order, without applying them.
-Counter vectors are independent copies aligned with movie.times. Raw channel
-indices, unused auxiliary readings, and the complete raw table are discarded
-after mapping the data. Detector IDs/coordinates still identify the measured
-sites within the shared spatial grid.
+Counter vectors reference the intentionally retained source data and align
+with movie.times. Detector IDs/coordinates identify the physical sample sites
+within the shared spatial grid. Full native source retention is file metadata;
+the reader exposes no extra data/frame attributes.
 
 Movie TIMETIC is milliseconds, divided by 1000 for `movie.times` in seconds.
 The first update can start after zero; the original time origin and frame
@@ -445,10 +495,61 @@ frame selection belongs to NumPy indexing. Full headers are not duplicated
 on measurements. Optional vendor checksum footers are retained
 but not verified.
 
-Conversion deep-copies the shared plane/time series. Current curve writers
-reject these layouts; users must explicitly select a frame and a 1D profile
-and provide suitable geometry for a curve export. See
+Conversion retains a plane/time series only when the target declares support
+for its acquisition, measurement and radiation types. Unsupported measurements
+are warned about and omitted. To convert to a curve format, explicitly select
+a frame and a 1D profile before conversion and provide suitable geometry. See
 [measurement arrays](measurements.md) for examples, including dose volumes.
+
+### Writing SRS MapCHECK
+
+```python
+reader = SRSMapCheck("measurement.txt").parse()
+reader.measurements[0].doses *= 1.01
+reader.save("edited.txt")
+
+movie = SRSMapCheck("measurement.smcm").parse()
+movie.save("export.smcm")
+```
+
+Native output requires one plane Measurement plus the retained source metadata;
+it does not invent instrument calibration, intermediate counts, flags or
+auxiliary acquisition channels from an unrelated dose plane. Static planes
+write measured text files and temporal planes write raw movie files, according
+to the acquisition type rather than the filename extension.
+
+For measured files, Measurement.doses supplies the final **Dose Interpolated**
+table. Every other table is written from `file_meta["SRS MapCHECK"]["Tables"]`.
+Tables must match the grid shape. Editing the final dose does not recalculate
+the vendor's raw/corrected counts, flags or other intermediate tables; those
+remain independently available for explicit editing in metadata. Grid axes
+come from the Measurement, and native row/column IDs remain in `Grid`.
+
+For movies, the writer takes physical detector readings from Measurement.doses
+and timestamps from Measurement.times. `Updates`, `Pulses` and `Statuses`
+supply the counters; `Corrections` supplies detector correction values.
+All remaining data columns and auxiliary correction/coordinate cells are
+restored from `Data`, `Columns`, `Correction Rows` and `Coordinate Rows`.
+The full original Data table is retained as source data; shared signal/time
+arrays and the named counter/correction vectors take precedence when writing
+their corresponding columns. Sample counts and totals must be consistent,
+timestamps must resolve to integral milliseconds, and detector coordinates
+must coincide with the Measurement axes.
+
+Native movies have no independent values for interpolated gaps. Physical
+detector edits are supported. Interpolated pixels, including any caller edits
+to them, are ignored when writing the sparse native detector channels. Their
+values are reconstructed from physical detector readings on reload. Saving
+preserves device-local XY geometry at Z=0 and the detected
+UTF-8, UTF-8 BOM or CP1252 encoding. Original `Header Lines` and `Checksum` remain
+metadata for provenance; output headers are serialized from the structured
+fields and CRC-32 is regenerated over all encoded CRLF bytes before its footer.
+
+All three native writers validate and encode their complete output before
+opening the destination, so validation errors leave an existing file unchanged.
+Round-trip checks cover the supplied native acquisitions and generated
+regression fixtures; importing generated files in the vendor applications
+remains an additional interoperability check.
 
 ## RayStation
 

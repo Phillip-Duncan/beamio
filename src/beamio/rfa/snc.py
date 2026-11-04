@@ -242,6 +242,12 @@ class SNCSunScan(BeamData):
     number. Text exports contain one processed table and support only ``"latest"``.
     """
 
+    supported_acquisition_types = frozenset({AcquisitionType.Static})
+    supported_measurement_types = frozenset(SCAN_NAMES)
+    supported_radiation_types = frozenset(
+        {None, RadiationType.PHOTON, RadiationType.ELECTRON, RadiationType.PROTON}
+    )
+
     def __init__(self, file_path: str | Path, *, layer: str | int = "latest") -> None:
         super().__init__(file_path)
         if not (layer in ("latest", "raw") or (type(layer) is int and layer > 0)):
@@ -310,9 +316,9 @@ class SNCSunScan(BeamData):
     def _scan_lines(self, measurement: Measurement) -> list[str]:
         kind = measurement.type
         if (
-            measurement.acquisition_type is not AcquisitionType.Static
+            measurement.acquisition_type not in self.supported_acquisition_types
             or kind is None
-            or kind not in SCAN_NAMES
+            or kind not in self.supported_measurement_types
         ):
             raise ValueError(
                 "SNC output supports only static 1D measurements; "

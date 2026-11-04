@@ -20,10 +20,7 @@ def test_srsmapcheck_explicit_static_row_converts_with_local_coordinates(tmp_pat
     path = tmp_path / "map.txt"
     path.write_text(measured_export())
     source = SRSMapCheck(path).parse()
-    converted = source.convert(target)
-    plane = converted.measurements[0]
-    converted.file_meta["Header"]["File Name"] = "changed"
-    assert source.file_meta["Header"]["File Name"] == "Synthetic export"
+    plane = source.measurements[0]
     # The caller explicitly selects a 1D row from the shared plane model.
     row = deepcopy(plane)
     row.type = MeasurementType.CrosslineProfile
@@ -32,7 +29,10 @@ def test_srsmapcheck_explicit_static_row_converts_with_local_coordinates(tmp_pat
     row.coordinates = plane.coordinates[1].copy()
     row.startpoint, row.endpoint = tuple(row.coordinates[0]), tuple(row.coordinates[-1])
     row.validate()
-    converted.measurements = [row]
+    source.measurements = [row]
+    converted = source.convert(target)
+    converted.file_meta["Header"]["File Name"] = "changed"
+    assert source.file_meta["Header"]["File Name"] == "Synthetic export"
     destination = tmp_path / ("row" + suffix)
     converted.save(destination)
     actual = target(destination).parse().measurements[0]
@@ -58,8 +58,8 @@ def test_srsmapcheck_movie_requires_explicit_frame_and_row_for_curve_export(tmp_
     row.coordinates = series.coordinates[1].copy()
     row.startpoint, row.endpoint = tuple(row.coordinates[0]), tuple(row.coordinates[-1])
     row.validate()
+    source.measurements = [row]
     converted = source.convert(SNCSunScan)
-    converted.measurements = [row]
     destination = tmp_path / "row.snctxt"
     converted.save(destination)
     actual = SNCSunScan(destination).parse().measurements[0]
@@ -121,17 +121,16 @@ def test_writers_validate_supported_measurements_before_replacing_output(
     assert destination.read_text() == "keep this file"
 
 
-@pytest.mark.parametrize("kind", [MeasurementType.DosePlane, MeasurementType.DoseVolume])
 @pytest.mark.parametrize("temporal", [False, True])
-def test_conversion_preserves_shared_grid_geometry_and_time_without_aliasing(kind, temporal):
+def test_conversion_preserves_supported_grid_geometry_and_time_without_aliasing(temporal):
     source = SNCSunScan("")
-    scan = array_measurement(kind, temporal)
+    scan = array_measurement(MeasurementType.DosePlane, temporal)
     scan.coordinates = np.stack(scan.reconstruct_xyz(), axis=-1)
     source.measurements = [scan]
-    converted = source.convert(Raystation)
+    converted = source.convert(SRSMapCheck)
     actual = converted.measurements[0]
     actual.validate()
-    assert actual.type is kind
+    assert actual.type is MeasurementType.DosePlane
     assert actual.acquisition_type is scan.acquisition_type
     np.testing.assert_array_equal(actual.doses, scan.doses)
     np.testing.assert_array_equal(actual.coordinates, scan.coordinates)

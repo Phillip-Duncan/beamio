@@ -1,14 +1,15 @@
-"""Read PTW Mephysto MCC water-tank scans without resampling or normalization."""
+"""Read and write PTW MCC water-tank scans without resampling or normalization."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import re
 
 import numpy as np
 
 from beamio.common.beamdata import BeamData
-from beamio.common.measurement import Measurement, MeasurementType, RadiationType
+from beamio.common.measurement import AcquisitionType, Measurement, MeasurementType, RadiationType
 
 _CURVE_TYPES = {
     "PDD": MeasurementType.DepthDose,
@@ -119,8 +120,12 @@ class PTWMCC(BeamData):
 
     Reference readings, when present, are stored in ``metadata['PTW Reference']``.
     Samples retain their export order and scale; no reference correction is applied.
-    Detector arrays, diagonal/angled scans, and MCC writing are unsupported.
+    Writing supports the same static axial scan types, including reference readings.
     """
+
+    supported_acquisition_types = frozenset({AcquisitionType.Static})
+    supported_measurement_types = frozenset(_CURVE_TYPES.values())
+    supported_radiation_types = frozenset({None, *_MODALITIES.values()})
 
     def parse(self) -> PTWMCC:
         path = Path(self.file_path)
@@ -212,4 +217,146 @@ class PTWMCC(BeamData):
         return self
 
     def save(self, output_path: str) -> None:
-        raise NotImplementedError("MCC writing is not supported; convert to another format.")
+        if not self.measurements:
+            raise ValueError("MCC output requires at least one measurement.")
+        lines = ["BEGIN_SCAN_DATA"]
+        lines.extend(_metadata_lines({"FORMAT": "CC-Export V1.9", **self.file_meta}, "\t"))
+        used = set()
+        for index, measurement in enumerate(self.measurements, 1):
+            scan = copy.copy(measurement)
+            if (
+                scan.acquisition_type not in self.supported_acquisition_types
+                or scan.type not in self.supported_measurement_types
+            ):
+                raise ValueError("MCC output supports only static axial 1D measurements.")
+            scan.validate()
+            axis = {
+                MeasurementType.CrosslineProfile: 0,
+                MeasurementType.InlineProfile: 1,
+                MeasurementType.DepthDose: 2,
+            }[scan.type]
+            if scan.coordinates is not None:
+                if scan.startpoint is None:
+                    scan.startpoint = tuple(scan.coordinates[0])
+                if scan.endpoint is None:
+                    scan.endpoint = tuple(scan.coordinates[-1])
+            if scan.startpoint is None:
+                raise ValueError("MCC output requires spatial coordinates or a startpoint.")
+            if scan.endpoint is None:
+                end = list(scan.startpoint)
+                end[axis] = float(scan.positions[-1])
+                scan.endpoint = tuple(end)
+            xyz = np.column_stack(scan.reconstruct_xyz())
+            for fixed in set(range(3)) - {axis}:
+                if not np.allclose(xyz[:, fixed], xyz[0, fixed], rtol=0, atol=1e-9):
+                    raise ValueError("MCC output cannot represent non-axial acquisition motion.")
+            fields = {
+                key: value
+                for key, value in scan.metadata.items()
+                if key
+                not in {"PTW Reference", "PTW Scan Number", "FluenceMode", "FieldsizeCorners[mm]"}
+                and isinstance(value, (str, int, float))
+            }
+            fields.update(
+                {
+                    "SCAN_CURVETYPE": next(
+                        key for key, value in _CURVE_TYPES.items() if value == scan.type
+                    ),
+                    "SCAN_DIAGONAL": "NOT_DIAGONAL",
+                    "SCAN_ANGLE": "0",
+                    "CROSSPLANE_AXIS": "X",
+                    "INPLANE_AXIS": "Y",
+                }
+            )
+            if axis != 2:
+                fields["SCAN_DEPTH"] = f"{xyz[0, 2]:.17g}"
+            for coordinate, key in ((0, "SCAN_OFFAXIS_CROSSPLANE"), (1, "SCAN_OFFAXIS_INPLANE")):
+                fields[key] = (
+                    fields.get(key, "0") if coordinate == axis else f"{xyz[0, coordinate]:.17g}"
+                )
+            for key, value in (
+                ("ENERGY", scan.energy),
+                ("SSD", scan.SSD),
+                ("WEDGE_ANGLE", scan.wedge_angle),
+            ):
+                if value is None:
+                    fields.pop(key, None)
+                else:
+                    fields[key] = f"{value:.17g}"
+            if scan.radiation_type is None:
+                fields.pop("MODALITY", None)
+            elif scan.radiation_type not in _MODALITIES.values():
+                raise ValueError("MCC output supports photon and electron modalities.")
+            else:
+                fields["MODALITY"] = next(
+                    key for key, value in _MODALITIES.items() if value == scan.radiation_type
+                )
+            mode = scan.metadata.get("FluenceMode")
+            if scan.radiation_type is RadiationType.PHOTON and mode is not None:
+                if mode not in _FILTERS.values():
+                    raise ValueError("Unsupported MCC photon fluence mode.")
+                fields["FILTER"] = next(key for key, value in _FILTERS.items() if value == mode)
+            if scan.field_size is None:
+                fields.pop("FIELD_CROSSPLANE", None)
+                fields.pop("FIELD_INPLANE", None)
+            else:
+                fields["FIELD_CROSSPLANE"], fields["FIELD_INPLANE"] = (
+                    f"{v:.17g}" for v in scan.field_size
+                )
+                corners = scan.metadata.get("FieldsizeCorners[mm]")
+                if corners is not None:
+                    edges = np.array([float(v) for v in str(corners).split(";")])
+                    if (
+                        edges.shape != (4,)
+                        or not np.isfinite(edges).all()
+                        or not np.allclose(
+                            edges[2:] - edges[:2], scan.field_size, rtol=0, atol=1e-9
+                        )
+                    ):
+                        raise ValueError(
+                            "MCC field corners must match field_size; update or clear them."
+                        )
+                    fields["COLL_OFFSET_CROSSPLANE"], fields["COLL_OFFSET_INPLANE"] = (
+                        f"{v:.17g}" for v in (edges[2:] + edges[:2]) / 2
+                    )
+            arrays = [scan.positions, scan.doses]
+            if "PTW Reference" in scan.metadata:
+                reference = np.asarray(scan.metadata["PTW Reference"])
+                if reference.dtype.kind not in "biuf" or reference.shape != scan.positions.shape:
+                    raise ValueError("PTW Reference must be a real array matching positions.")
+                arrays.append(reference)
+            rows = np.column_stack(arrays).tolist()
+            _measurement(fields, rows)  # Apply the native schema before touching the destination.
+            number = scan.metadata.get("PTW Scan Number", index)
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, (int, np.integer))
+                or number < 0
+                or number in used
+            ):
+                raise ValueError("MCC scan numbers must be unique nonnegative integers.")
+            used.add(number)
+            lines.append(f"\tBEGIN_SCAN {number}")
+            lines.extend(_metadata_lines(fields, "\t\t"))
+            lines.append("\t\tBEGIN_DATA")
+            lines.extend("\t\t\t" + "\t".join(f"{value:.17g}" for value in row) for row in rows)
+            lines.extend(("\t\tEND_DATA", f"\tEND_SCAN {number}"))
+        lines.append("END_SCAN_DATA")
+        payload = ("\r\n".join(lines) + "\r\n").encode("utf-8")
+        Path(output_path).write_bytes(payload)
+
+
+def _metadata_lines(metadata: dict, indent: str) -> list[str]:
+    result = []
+    for key, value in metadata.items():
+        if not isinstance(value, (str, int, float)):
+            continue
+        if (
+            not isinstance(key, str)
+            or not key
+            or any(c in key for c in "=\r\n\t")
+            or any(c in str(value) for c in "\r\n")
+        ):
+            raise ValueError("MCC metadata requires single-line keys and values.")
+        result.append(f"{indent}{key}={value}")
+    return result
