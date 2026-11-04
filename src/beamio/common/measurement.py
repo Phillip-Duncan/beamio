@@ -28,15 +28,30 @@ class MeasurementType(Enum):
     CrosslineProfile = "CrosslineProfile"
     InlineProfile = "InlineProfile"
     DiagonalProfile = "DiagonalProfile"
+    DosePlane = "DosePlane"
+    DoseVolume = "DoseVolume"
+
+    @property
+    def spatial_ndim(self) -> int:
+        """Number of spatial array dimensions, independent of acquisition time."""
+        return {MeasurementType.DosePlane: 2, MeasurementType.DoseVolume: 3}.get(self, 1)
+
+
+class AcquisitionType(Enum):
+    Static = "Static"
+    TimeSeries = "TimeSeries"
 
 
 class Measurement:
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the Measurement class."""
 
         self.doses: np.ndarray = np.array([])
-        self.positions: np.ndarray = np.array([])
-        # Optional measured XYZ samples in mm, including off-axis acquisition motion.
+        self._axes: tuple[np.ndarray, ...] = (np.array([]),)
+        self.acquisition_type: AcquisitionType = AcquisitionType.Static
+        # Seconds, with one timestamp per leading dose frame; None for static data.
+        self.times: np.ndarray | None = None
+        # Fixed spatial XYZ samples in mm, with shape spatial_shape + (3,).
         self.coordinates: np.ndarray | None = None
 
         self.type: MeasurementType | None = None
@@ -56,8 +71,111 @@ class Measurement:
 
     # ---------- Public methods/helpers ----------
 
+    @property
+    def axes(self) -> tuple[np.ndarray, ...]:
+        """Spatial axes in dose-array order: (position,), (y, x), or (z, y, x), in mm."""
+        return self._axes
+
+    @axes.setter
+    def axes(self, values: tuple[np.ndarray, ...]) -> None:
+        axes = tuple(np.asarray(axis) for axis in values)
+        if any(np.iscomplexobj(axis) for axis in axes):
+            raise ValueError("Spatial axes must contain real coordinates.")
+        self._axes = tuple(np.asarray(axis, dtype=float) for axis in axes)
+
+    @property
+    def positions(self) -> np.ndarray:
+        """The single spatial axis of a 1D measurement; use axes for planes/volumes."""
+        if (
+            self.type in (MeasurementType.DosePlane, MeasurementType.DoseVolume)
+            or len(self._axes) != 1
+        ):
+            raise ValueError("positions is only available for 1D measurements; use axes.")
+        return self._axes[0]
+
+    @positions.setter
+    def positions(self, values: np.ndarray) -> None:
+        self.axes = (values,)
+
+    @property
+    def spatial_shape(self) -> tuple[int, ...]:
+        """Dose-array shape without its optional leading time dimension."""
+        shape = np.shape(self.doses)
+        return shape[1:] if self.acquisition_type == AcquisitionType.TimeSeries else shape
+
+    def validate(self) -> None:
+        """Check spatial/temporal shapes without filtering or changing acquired values.
+
+        NaN signals are allowed. Coordinates describe fixed spatial geometry and
+        never repeat across time. Timestamps retain acquisition order, including
+        instrument clock anomalies. Grid axes must be strictly monotonic; 1D
+        scans may retain repeated or unordered positions.
+        """
+        if not isinstance(self.type, MeasurementType):
+            raise ValueError("A supported MeasurementType is required.")
+        if not isinstance(self.acquisition_type, AcquisitionType):
+            raise ValueError("A supported AcquisitionType is required.")
+        doses = np.asarray(self.doses)
+        if doses.dtype.kind not in "biuf":
+            raise ValueError("doses must contain real numeric values.")
+        ndim = self.type.spatial_ndim
+        temporal = self.acquisition_type == AcquisitionType.TimeSeries
+        if doses.ndim != ndim + int(temporal) or any(size == 0 for size in doses.shape):
+            raise ValueError(
+                f"{self.type.value} / {self.acquisition_type.value} requires nonempty doses "
+                f"with {ndim + int(temporal)} dimensions (time first when present)."
+            )
+        if len(self.axes) != ndim:
+            raise ValueError(f"{self.type.value} requires {ndim} spatial axes.")
+        for axis, size in zip(self.axes, self.spatial_shape):
+            if axis.ndim != 1 or axis.size != size or not np.all(np.isfinite(axis)):
+                raise ValueError(
+                    "Spatial axes must be finite 1D arrays matching the spatial shape."
+                )
+            if ndim > 1 and not (np.all(np.diff(axis) > 0) or np.all(np.diff(axis) < 0)):
+                raise ValueError("Plane and volume axes must be strictly monotonic.")
+        if temporal:
+            times = np.asarray(self.times)
+            if (
+                times.dtype.kind not in "biuf"
+                or times.ndim != 1
+                or times.size != doses.shape[0]
+                or not np.all(np.isfinite(times))
+            ):
+                raise ValueError(
+                    "TimeSeries requires finite 1D times matching the leading dose axis."
+                )
+        elif self.times is not None:
+            raise ValueError("Static measurements require times=None.")
+        if self.coordinates is not None:
+            xyz = np.asarray(self.coordinates)
+            if (
+                xyz.dtype.kind not in "biuf"
+                or xyz.shape != self.spatial_shape + (3,)
+                or not np.all(np.isfinite(xyz))
+            ):
+                raise ValueError(
+                    "Coordinates must be finite XYZ samples matching the spatial shape."
+                )
+            if ndim == 1 and self.startpoint is not None and self.endpoint is not None:
+                self.reconstruct_xyz()
+
     def reconstruct_xyz(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reconstruct X, Y, Z positions from the stored positions and startpoint/endpoint."""
+        """Return spatial XYZ arrays, using explicit samples or regular-axis geometry."""
+        if self.type in (MeasurementType.DosePlane, MeasurementType.DoseVolume):
+            self.validate()
+            if self.coordinates is not None:
+                xyz = np.asarray(self.coordinates, dtype=float)
+                return xyz[..., 0].copy(), xyz[..., 1].copy(), xyz[..., 2].copy()
+            if self.type == MeasurementType.DoseVolume:
+                z, y, x = np.meshgrid(*self.axes, indexing="ij")
+            else:
+                y, x = np.meshgrid(*self.axes, indexing="ij")
+                depth = self.startpoint[2] if self.startpoint is not None else 0.0
+                if not np.isfinite(depth):
+                    raise ValueError("Plane depth must be finite.")
+                z = np.full_like(x, depth)
+            return x, y, z
         if self.startpoint is None or self.endpoint is None:
             raise ValueError(
                 "Startpoint and endpoint must be defined to reconstruct XYZ positions."

@@ -90,7 +90,18 @@ def check_archives(directory, tag):
         for name in names:
             path = PurePosixPath(name)
             require(
-                path.suffix.lower() not in {".asc", ".csv", ".mcc", ".prm", ".snctxt", ".sncxml", ".pyc"}
+                path.suffix.lower()
+                not in {
+                    ".asc",
+                    ".csv",
+                    ".mcc",
+                    ".prm",
+                    ".smcm",
+                    ".dcm",
+                    ".snctxt",
+                    ".sncxml",
+                    ".pyc",
+                }
                 and not {".venv", "__pycache__", ".git", ".env"}.intersection(path.parts),
                 f"Unexpected local/data artifact in source archive: {name}",
             )

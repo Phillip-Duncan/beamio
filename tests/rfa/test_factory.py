@@ -17,11 +17,21 @@ from tests.support.snc import xml_export
         "scan.SNCXML",
         "scan.MCC",
         "scan.PRM",
+        "scan.TXT",
+        "scan.SMCM",
     ],
 )
 def test_supported_extensions(name):
     assert BeamDataFactory.is_supported_file(name)
-    assert BeamDataFactory.get_supported_extensions() == ["asc", "mcc", "prm", "snctxt", "sncxml"]
+    assert BeamDataFactory.get_supported_extensions() == [
+        "asc",
+        "mcc",
+        "prm",
+        "smcm",
+        "snctxt",
+        "sncxml",
+        "txt",
+    ]
 
 
 @pytest.mark.parametrize("name", ["scan.csv", "scan", "scan.asc.bak"])

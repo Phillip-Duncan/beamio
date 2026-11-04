@@ -5,7 +5,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from beamio.common.measurement import Measurement, MeasurementType, RadiationType, diagonal_direction
+from beamio.common.measurement import (
+    AcquisitionType,
+    Measurement,
+    MeasurementType,
+    RadiationType,
+    diagonal_direction,
+)
 from beamio.common.beamdata import BeamData
 
 
@@ -331,6 +337,17 @@ class IBAAccept6(BeamData):
         out.append("#")
 
         for idx, m in enumerate(self.measurements, start=1):
+            if m.acquisition_type is not AcquisitionType.Static or m.type not in (
+                MeasurementType.DepthDose,
+                MeasurementType.CrosslineProfile,
+                MeasurementType.InlineProfile,
+                MeasurementType.DiagonalProfile,
+            ):
+                raise ValueError(
+                    "IBA output supports only static 1D measurements; "
+                    "select a frame and/or profile explicitly before exporting."
+                )
+            m.validate()
             out.append(f"# Measurement number \t{idx}")
             out.append("#")
 

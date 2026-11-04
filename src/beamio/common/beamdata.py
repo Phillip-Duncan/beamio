@@ -1,8 +1,5 @@
 from abc import ABC, abstractmethod
-import os
 import copy
-
-import numpy as np
 
 from beamio.common.measurement import Measurement
 

@@ -7,8 +7,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from beamio.common.beamdata import BeamData
-from beamio.common.measurement import Measurement, diagonal_direction
-from beamio.common.measurement import MeasurementType, RadiationType  # adjust import path if different
+from beamio.common.measurement import (
+    AcquisitionType,
+    Measurement,
+    MeasurementType,
+    RadiationType,
+    diagonal_direction,
+)
 
 
 class Raystation(BeamData):
@@ -316,6 +321,15 @@ class Raystation(BeamData):
     # ---------- Measurement block formatting (schema-locked keys + defaults) ----------
 
     def _format_measurement_block(self, m: Measurement) -> List[str]:
+        if (
+            m.acquisition_type is not AcquisitionType.Static
+            or m.type not in self.CURVE_TYPE_MAPPING.values()
+        ):
+            raise ValueError(
+                "RayStation output supports only static 1D measurements; "
+                "select a frame and/or profile explicitly before exporting."
+            )
+        m.validate()
         meta_in: Dict[str, str] = dict(getattr(m, "metadata", {}) or {})
         meta: Dict[str, str] = {}
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 import re
 import warnings
@@ -11,12 +10,12 @@ import numpy as np
 
 from beamio.common.beamdata import BeamData
 from beamio.common.measurement import (
+    AcquisitionType,
     Measurement,
     MeasurementType,
     RadiationType,
     diagonal_direction,
 )
-from beamio.rfa._icprofiler_series import ICProfilerBeamCenter, ICProfilerTimeSeries
 
 _SECTIONS = {
     "Profiler Setup",
@@ -80,7 +79,7 @@ def _header_line(target: dict, cells: list[str]) -> None:
 
 
 def _validate_totals(metadata: dict, columns: tuple[str, ...], data: np.ndarray) -> None:
-    """Check available export totals against the complete table, before frame selection."""
+    """Check available export totals against the complete acquisition table."""
     if "Total Pulses" in metadata:
         total = _number(metadata["Total Pulses"], "Total Pulses")
         if total < 0 or total % 1:
@@ -161,34 +160,18 @@ def _read(path: Path):
 class ICProfiler(BeamData):
     """Read four profiles from an IC PROFILER acquisition.
 
-    By default the final cumulative frame is leakage-corrected and array-calibrated,
-    in relative counts. ``frame`` selects a cumulative frame by Python index.
-    ``absolute=True`` additionally applies the acquisition's Dose Per Count factor;
-    a valid enabled absolute calibration is required. No normalization is performed.
+    Each axis is a shared Measurement with doses[time, detector] and times in
+    seconds. Exported cumulative signals are leakage-corrected and array-calibrated
+    in corrected counts. Every frame is retained. Dose Per Count remains metadata
+    for caller-side scaling; frame selection and differencing use NumPy directly.
 
     Version 25 is validated. Other nonempty versions emit UserWarning and are
     attempted using the same layout and data checks.
 
-    ``columns`` and ``data`` retain all numeric acquisition frames, including auxiliary
-    channels. ``detector_ids``, ``leak_rates``, ``calibration``, and
-    ``ignored_detectors`` describe the detector channels in exported column order.
-    Ignored detectors remain in profiles with NaN dose; no interpolation is applied.
+    Acquisition counters and calibration vectors are in ``file_meta["IC Profiler"]``.
+    Measurement metadata identifies its axis and detector IDs. Ignored
+    detectors retain their geometry with NaN signals; no interpolation is applied.
     """
-
-    def __init__(self, file_path: str, *, frame: int = -1, absolute: bool = False):
-        super().__init__(file_path)
-        if isinstance(frame, bool) or not isinstance(frame, int):
-            raise ValueError("IC Profiler frame must be an integer index.")
-        self.frame = frame
-        self.absolute = absolute
-        self.columns: tuple[str, ...] = ()
-        self.data = np.empty((0, 0))
-        self.detector_ids: tuple[str, ...] = ()
-        self.leak_rates = np.array([])
-        self.calibration = np.array([])
-        self.ignored_detectors = np.array([], dtype=bool)
-        self._dose_factor = 1.0
-        self._dose_scale = "corrected counts"
 
     def parse(self) -> ICProfiler:
         metadata, columns, corrections, data = _read(Path(self.file_path))
@@ -245,12 +228,6 @@ class ICProfiler(BeamData):
             ):
                 raise ValueError(f"IC Profiler {key} must increase cumulatively.")
         _validate_totals(metadata, columns, data)
-        if not -len(data) <= self.frame < len(data):
-            raise ValueError(
-                f"IC Profiler frame {self.frame} is out of range for {len(data)} frames."
-            )
-        frame_index = self.frame % len(data)
-
         factors = {}
         for name in ("BIAS1", "Calibration", "IgnoreDet"):
             cells = corrections.get(name, [])
@@ -262,19 +239,10 @@ class ICProfiler(BeamData):
         if not np.all(np.isin(factors["IgnoreDet"], (0, 1))):
             raise ValueError("IC Profiler IgnoreDet flags must be 0 or 1.")
         ignored = factors["IgnoreDet"].astype(bool)
-        ticks = data[frame_index, columns.index("TIMETIC")]
-        doses = (data[frame_index, indices] - ticks * factors["BIAS1"]) * factors["Calibration"]
-        dose_factor = 1.0
-        if self.absolute:
-            dose_cal = metadata.get("Dose Calibration", {})
-            dose_per_count = _number(dose_cal.get("Dose Per Count", ""), "Dose Per Count")
-            if dose_cal.get("Absolute Calibration", "").lower() != "true" or dose_per_count <= 0:
-                raise ValueError(
-                    "IC Profiler absolute dose requires an enabled positive calibration."
-                )
-            dose_factor = dose_per_count
-            doses *= dose_factor
-        doses[ignored] = np.nan
+        ticks = data[:, columns.index("TIMETIC")]
+        times = ticks * 1e-6
+        doses = (data[:, indices] - ticks[:, None] * factors["BIAS1"]) * factors["Calibration"]
+        doses[:, ignored] = np.nan
         spacing = _number(metadata.get("Detector Spacing", ""), "Detector Spacing") * 10
         if spacing != 5:
             raise ValueError("Only IC Profiler 0.5 cm detector spacing is supported.")
@@ -314,116 +282,29 @@ class ICProfiler(BeamData):
                 if axis in ("PD", "ND")
                 else distance
             )
-            scan.doses = doses[selected].copy()
+            scan.acquisition_type = AcquisitionType.TimeSeries
+            scan.times = times
+            scan.doses = doses[:, selected]
+            scan.metadata["Cumulative"] = True
+            scan.metadata["Dose Scale"] = "corrected counts"
             scan.metadata["IC Profiler"] = {
                 "Axis": axis,
                 "Detector IDs": tuple(detector_ids[i] for i in selected),
-                "Ignored Detectors": ignored[selected].copy(),
-                "Raw Counts": data[frame_index, indices[selected]].copy(),
-                "Leak Rates": factors["BIAS1"][selected].copy(),
-                "Calibration": factors["Calibration"][selected].copy(),
-                "Frame Index": frame_index,
-                "Frame Count": len(data),
-                "TimeTic": ticks,
-                "Dose Scale": "absolute" if self.absolute else "corrected counts",
             }
+            scan.validate()
             measurements.append(scan)
+        metadata["IC Profiler"] = {
+            "Detector IDs": detector_ids,
+            "Leak Rates": factors["BIAS1"],
+            "Calibration": factors["Calibration"],
+            "Ignored Detectors": ignored,
+            # Copies avoid retaining the complete raw table through NumPy views.
+            "Updates": data[:, columns.index("UPDATE#")].copy(),
+            "Pulses": data[:, columns.index("PULSES")].copy(),
+            "Statuses": data[:, columns.index("STATUS")].copy(),
+        }
         self.file_meta, self.measurements = metadata, measurements
-        self.columns, self.data, self.detector_ids = columns, data, detector_ids
-        self.leak_rates, self.calibration = factors["BIAS1"], factors["Calibration"]
-        self.ignored_detectors = ignored
-        self._dose_factor = dose_factor
-        self._dose_scale = "absolute" if self.absolute else "corrected counts"
         return self
-
-    def time_series(self, axis: str = "X", *, cumulative: bool = False) -> ICProfilerTimeSeries:
-        """Return calibrated profiles for all updates on X, Y, PD, or ND.
-
-        By default each row is the signal added since the previous update, with
-        leakage correction using that interval's tick difference. The first row
-        starts at acquisition time zero. ``cumulative=True`` returns integrated
-        profiles. This method always uses all frames, regardless of ``frame``.
-
-        Times are exported TIMETIC values converted from microseconds to seconds.
-        In interval mode, nonpositive durations or no new pulses give NaN rows;
-        frame alignment and the original timestamps are retained. No smoothing,
-        resampling, normalization, or division by interval duration is applied.
-        """
-        if axis not in ("X", "Y", "PD", "ND"):
-            raise ValueError("IC Profiler time-series axis must be X, Y, PD, or ND.")
-        if not self.columns or not self.data.size:
-            raise ValueError("Parse an IC Profiler acquisition before requesting time series.")
-        selected = [
-            i
-            for i, label in enumerate(self.detector_ids)
-            if label.startswith(axis) and label[len(axis) :].isdigit()
-        ]
-        detector_ids = tuple(self.detector_ids[i] for i in selected)
-        columns = [self.columns.index(label) for label in detector_ids]
-        ticks = self.data[:, self.columns.index("TIMETIC")].copy()
-        delta_ticks = np.diff(ticks, prepend=0)
-        pulses = self.data[:, self.columns.index("PULSES")].copy()
-        counts = self.data[:, columns].copy()
-        if cumulative:
-            elapsed = ticks
-            valid = (ticks > 0) & (pulses > 0)
-        else:
-            elapsed = delta_ticks
-            pulses = np.diff(pulses, prepend=0)
-            counts = np.diff(counts, axis=0, prepend=np.zeros((1, len(columns))))
-            valid = (delta_ticks > 0) & (pulses > 0)
-        doses = (counts - elapsed[:, None] * self.leak_rates[selected]) * self.calibration[selected]
-        doses *= self._dose_factor
-        doses[:, self.ignored_detectors[selected]] = np.nan
-        doses[~valid] = np.nan
-        positions = (
-            np.array([int(label[len(axis) :]) - 33 for label in detector_ids], dtype=float) * 5
-        )
-        if axis in ("PD", "ND"):
-            positions *= np.sqrt(2)
-        return ICProfilerTimeSeries(
-            axis=axis,
-            times=ticks * 1e-6,
-            durations=delta_ticks * 1e-6,
-            positions=positions,
-            doses=doses,
-            pulses=pulses,
-            updates=self.data[:, self.columns.index("UPDATE#")].astype(np.int64),
-            statuses=self.data[:, self.columns.index("STATUS")].astype(np.int64),
-            valid_frames=valid,
-            cumulative=cumulative,
-            dose_scale=self._dose_scale,
-            detector_ids=detector_ids,
-        )
-
-    def beam_center(
-        self,
-        *,
-        cumulative: bool = False,
-        method: str = "InflectionPoint",
-        level: float = 0.5,
-        min_signal: float = 0.05,
-    ) -> ICProfilerBeamCenter:
-        """Return X/Y field-edge-midpoint beam centres over the complete acquisition.
-
-        The default uses interval profiles and InflectionPoint edges. Set
-        ``method='FWHM'`` for half-maximum edges (or ``level`` for another fraction).
-        ``min_signal``
-        is the minimum peak as a fraction of the strongest frame on each axis.
-        Undetectable centres are NaN. This geometric metric does not apply a
-        vendor-specific FFF, wedge, or beam-quality correction.
-        """
-        x = self.time_series("X", cumulative=cumulative)
-        y = self.time_series("Y", cumulative=cumulative)
-        return ICProfilerBeamCenter(
-            times=x.times,
-            x=x.beam_center(method=method, level=level, min_signal=min_signal),
-            y=y.beam_center(method=method, level=level, min_signal=min_signal),
-            cumulative=cumulative,
-            level=level if method == "FWHM" else None,
-            min_signal=min_signal,
-            method=method,
-        )
 
     def save(self, output_path: str) -> None:
         raise NotImplementedError(
@@ -479,6 +360,4 @@ def _measurement(metadata: dict) -> Measurement:
             if len(parts) != 2 or parts[1] != "deg":
                 raise ValueError(f"Invalid IC Profiler {key}.")
             scan.metadata[key.replace(" ", "") + "[deg]"] = _number(parts[0], key)
-    # Header sections are retained independently for each measurement and conversions.
-    scan.metadata["IC Profiler Header"] = copy.deepcopy(metadata)
     return scan

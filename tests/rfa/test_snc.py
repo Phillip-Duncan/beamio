@@ -285,6 +285,6 @@ def test_invalid_output_does_not_overwrite_existing_file(tmp_path, measurement):
     beam.measurements = [measurement]
     path = tmp_path / "existing.snctxt"
     path.write_text("existing contents")
-    with pytest.raises(ValueError, match="matching one-dimensional"):
+    with pytest.raises(ValueError, match="spatial shape"):
         beam.save(path)
     assert path.read_text() == "existing contents"

@@ -1,17 +1,21 @@
+import gc
+import weakref
 import warnings
+
+import beamio.rfa.icprofiler as icprofiler_module
 
 import numpy as np
 import pytest
 
-from beamio.common.measurement import MeasurementType, RadiationType
+from beamio.common.measurement import AcquisitionType, MeasurementType, RadiationType
 from beamio.rfa import BeamDataFactory, ICProfiler
 from tests.support.icprofiler import change_table_cell, prm_export
 
 
-def read_prm(tmp_path, text=None, **options):
+def read_prm(tmp_path, text=None):
     path = tmp_path / "input.prm"
     path.write_text(prm_export() if text is None else text, encoding="utf-8")
-    return ICProfiler(path, **options).parse()
+    return ICProfiler(path).parse()
 
 
 def test_four_profiles_use_labelled_geometry_and_cumulative_corrected_counts(tmp_path):
@@ -22,7 +26,7 @@ def test_four_profiles_use_labelled_geometry_and_cumulative_corrected_counts(tmp
         MeasurementType.DiagonalProfile,
         MeasurementType.DiagonalProfile,
     ]
-    assert [len(m.doses) for m in beam.measurements] == [63, 65, 63, 63]
+    assert [m.doses.shape[1] for m in beam.measurements] == [63, 65, 63, 63]
     for i, scan in enumerate(beam.measurements):
         assert scan.radiation_type == RadiationType.PHOTON
         assert scan.energy == 6
@@ -32,16 +36,16 @@ def test_four_profiles_use_labelled_geometry_and_cumulative_corrected_counts(tmp
         assert scan.metadata["FluenceMode"] == "FFF"
         assert scan.metadata["FieldsizeCorners[mm]"] == "-100; -80; 150; 120"
         assert scan.metadata["GantryAngle[deg]"] == 90
-        assert scan.metadata["IC Profiler"]["Frame Index"] == 1
-        assert scan.metadata["IC Profiler"]["TimeTic"] == 2000
-        assert scan.metadata["IC Profiler"]["Dose Scale"] == "corrected counts"
+        assert scan.acquisition_type is AcquisitionType.TimeSeries
+        np.testing.assert_allclose(scan.times, [0.001, 0.002])
+        assert scan.metadata["Dose Scale"] == "corrected counts"
         xyz = np.column_stack(scan.reconstruct_xyz())
         np.testing.assert_array_equal(xyz[:, 2], 29)
         start = [0, 63, 128, 191][i]
         # Final raw frame, minus final TIMETIC * leakage, times array factor.
         # Do not sum the already cumulative frames or subtract BIAS1's TIMETIC.
         np.testing.assert_array_equal(
-            scan.doses, (200 + np.arange(start, start + len(xyz)) - 20) * 2
+            scan.doses[-1], (200 + np.arange(start, start + len(xyz)) - 20) * 2
         )
     cross, inline, positive, negative = beam.measurements
     np.testing.assert_array_equal(cross.positions[[0, 30, 31, 32, -1]], [-160, -10, 0, 10, 160])
@@ -53,31 +57,48 @@ def test_four_profiles_use_labelled_geometry_and_cumulative_corrected_counts(tmp
         np.testing.assert_allclose(scan.positions, cross.positions * np.sqrt(2))
 
 
-def test_retains_all_raw_frames_and_separate_calibration_headers(tmp_path):
+def test_retains_acquisition_counters_and_calibration_metadata(tmp_path):
     beam = read_prm(tmp_path)
-    assert beam.data.shape == (2, 268)
-    assert beam.columns[:4] == ("UPDATE#", "TIMETIC", "PULSES", "STATUS")
-    assert beam.columns[-1] == "Temperature"
-    assert len(beam.detector_ids) == 254
-    np.testing.assert_array_equal(beam.data[:, beam.columns.index("X1")], [100, 200])
-    np.testing.assert_array_equal(beam.leak_rates, 0.01)
-    np.testing.assert_array_equal(beam.calibration, 2)
-    assert not np.any(beam.ignored_detectors)
+    source = beam.file_meta["IC Profiler"]
+    assert len(source["Detector IDs"]) == 254
+    np.testing.assert_array_equal(source["Updates"], [0, 1])
+    np.testing.assert_array_equal(source["Pulses"], [10, 20])
+    np.testing.assert_array_equal(source["Statuses"], [67, 67])
+    np.testing.assert_array_equal(source["Leak Rates"], 0.01)
+    np.testing.assert_array_equal(source["Calibration"], 2)
+    assert not np.any(source["Ignored Detectors"])
     assert beam.file_meta["Time"] == "12:34:56"
     assert beam.file_meta["Dose Calibration"]["Dose Per Count"] == "0.01"
     assert beam.file_meta["Reference Detector Dose Calibration"]["Dose Per Count"] == "123"
 
 
-def test_frame_selection_and_absolute_calibration(tmp_path):
-    relative = read_prm(tmp_path, frame=0)
-    assert relative.measurements[0].doses[0] == 180
-    absolute = read_prm(tmp_path, frame=-2, absolute=True)
-    assert absolute.measurements[0].doses[0] == 1.8
-    assert absolute.measurements[0].metadata["IC Profiler"]["Dose Scale"] == "absolute"
-    # PRM absolute dose uses its declared Dose Per Count, not reference calibration.
-    np.testing.assert_allclose(
-        absolute.measurements[0].doses, relative.measurements[0].doses * 0.01
-    )
+def test_raw_acquisition_table_is_released_after_parsing(tmp_path, monkeypatch):
+    references = []
+    original_read = icprofiler_module._read
+
+    def observe_read(path):
+        result = original_read(path)
+        references.append(weakref.ref(result[-1]))
+        return result
+
+    monkeypatch.setattr(icprofiler_module, "_read", observe_read)
+    beam = read_prm(tmp_path)
+    gc.collect()
+    assert references[0]() is None
+    assert set(vars(beam)) == {"file_path", "measurements", "file_meta"}
+    np.testing.assert_array_equal(beam.file_meta["IC Profiler"]["Pulses"], [10, 20])
+    assert beam.measurements[0].doses.shape == (2, 63)
+
+
+def test_scaling_is_an_explicit_numpy_operation(tmp_path):
+    beam = read_prm(tmp_path)
+    scan = beam.measurements[0]
+    factor = float(beam.file_meta["Dose Calibration"]["Dose Per Count"])
+    scaled = scan.doses * factor
+    assert scan.doses[0, 0] == 180
+    assert scaled[0, 0] == 1.8
+    assert scan.metadata["Dose Scale"] == "corrected counts"
+    assert scan.metadata["Cumulative"] is True
 
 
 def test_stop_frame_tick_can_precede_previous_tick(tmp_path):
@@ -86,15 +107,8 @@ def test_stop_frame_tick_can_precede_previous_tick(tmp_path):
     text = prm_export().replace("Data:\t1\t2000\t", "Data:\t1\t999\t")
     text = text.replace("Total Time:\t0.002", "Total Time:\t0.000999")
     beam = read_prm(tmp_path, text)
-    assert beam.data[-1, beam.columns.index("TIMETIC")] == 999
-    assert beam.measurements[0].metadata["IC Profiler"]["TimeTic"] == 999
-    assert beam.measurements[0].doses[0] == (200 - 999 * 0.01) * 2
-
-
-@pytest.mark.parametrize("frame", [2, -3, 0.5, True])
-def test_invalid_frame(tmp_path, frame):
-    with pytest.raises(ValueError, match="frame"):
-        read_prm(tmp_path, frame=frame)
+    assert beam.measurements[0].times[-1] == pytest.approx(999e-6)
+    assert beam.measurements[0].doses[-1, 0] == (200 - 999 * 0.01) * 2
 
 
 @pytest.mark.parametrize(
@@ -102,24 +116,24 @@ def test_invalid_frame(tmp_path, frame):
     [
         ("Absolute Calibration:\ttrue", "Absolute Calibration:\tfalse"),
         ("Dose Per Count:\t0.01", "Dose Per Count:\t0"),
+        ("Dose Per Count:\t0.01", "Dose Per Count:\tunknown"),
     ],
 )
-def test_absolute_requires_valid_acquisition_calibration(tmp_path, old, new):
-    text = prm_export().replace(old, new, 1)
-    read_prm(tmp_path, text)  # relative dose does not require an absolute calibration
-    with pytest.raises(ValueError, match="absolute dose requires"):
-        read_prm(tmp_path, text, absolute=True)
+def test_absolute_calibration_metadata_does_not_change_parsed_counts(tmp_path, old, new):
+    reference = read_prm(tmp_path)
+    beam = read_prm(tmp_path, prm_export().replace(old, new, 1))
+    for actual, expected in zip(beam.measurements, reference.measurements):
+        np.testing.assert_array_equal(actual.doses, expected.doses)
 
 
-def test_ignored_channels_keep_geometry_and_raw_values(tmp_path):
+def test_ignored_channels_keep_geometry_and_ignore_metadata(tmp_path):
     text = change_table_cell(prm_export(), "IgnoreDet", "X33", 1)
     beam = read_prm(tmp_path, text)
     scan = beam.measurements[0]
-    assert len(scan.doses) == 63
+    assert scan.doses.shape == (2, 63)
     assert scan.positions[31] == 0
-    assert np.isnan(scan.doses[31])
-    assert scan.metadata["IC Profiler"]["Ignored Detectors"][31]
-    assert scan.metadata["IC Profiler"]["Raw Counts"][31] == 231
+    assert np.isnan(scan.doses[:, 31]).all()
+    assert beam.file_meta["IC Profiler"]["Ignored Detectors"][31]
 
 
 def test_reordered_columns_preserve_exported_sample_order(tmp_path):
@@ -135,7 +149,7 @@ def test_reordered_columns_preserve_exported_sample_order(tmp_path):
     reordered = read_prm(tmp_path, "\n".join(lines))
     for expected, actual in zip(original.measurements, reordered.measurements):
         np.testing.assert_array_equal(actual.positions, expected.positions[::-1])
-        np.testing.assert_array_equal(actual.doses, expected.doses[::-1])
+        np.testing.assert_array_equal(actual.doses, expected.doses[:, ::-1])
         np.testing.assert_array_equal(actual.coordinates, expected.coordinates[::-1])
         np.testing.assert_array_equal(np.column_stack(actual.reconstruct_xyz()), actual.coordinates)
 
@@ -143,8 +157,8 @@ def test_reordered_columns_preserve_exported_sample_order(tmp_path):
 def test_single_frame_and_negative_corrected_signal(tmp_path):
     text = change_table_cell(prm_export(frames=1), "Data:", "X1", 1)
     beam = read_prm(tmp_path, text)
-    assert beam.measurements[0].metadata["IC Profiler"]["Frame Count"] == 1
-    assert beam.measurements[0].doses[0] == -18
+    assert beam.measurements[0].doses.shape == (1, 63)
+    assert beam.measurements[0].doses[0, 0] == -18
 
 
 @pytest.mark.parametrize(
@@ -214,7 +228,6 @@ def test_unvalidated_versions_warn_and_attempt_the_validated_layout(tmp_path, ve
     for result, reference in zip(actual.measurements, expected.measurements):
         np.testing.assert_array_equal(result.positions, reference.positions)
         np.testing.assert_array_equal(result.doses, reference.doses)
-    np.testing.assert_array_equal(actual.time_series().doses, expected.time_series().doses)
 
 
 def test_validated_version_is_quiet_and_missing_version_is_rejected(tmp_path):
@@ -266,11 +279,10 @@ def test_truncated_data_rejected_with_line_context(tmp_path):
         read_prm(tmp_path, "\n".join(lines))
 
 
-def test_missing_complete_final_update_is_rejected_before_frame_selection(tmp_path):
+def test_missing_complete_final_update_is_rejected(tmp_path):
     text = "\n".join(prm_export().splitlines()[:-1]) + "\n"
-    for frame in (-1, 0):
-        with pytest.raises(ValueError, match="Total Pulses .* incomplete"):
-            read_prm(tmp_path, text, frame=frame)
+    with pytest.raises(ValueError, match="Total Pulses .* incomplete"):
+        read_prm(tmp_path, text)
 
 
 def test_time_total_detects_a_missing_stop_frame_without_new_pulses(tmp_path):

@@ -1,6 +1,6 @@
 import numpy as np
 
-from beamio.common.measurement import MeasurementType
+from beamio.common.measurement import AcquisitionType, Measurement, MeasurementType
 
 AXIAL_SCANS = [
     (MeasurementType.DepthDose, (0, 0, 0), (0, 0, 20), [0, 10, 20]),
@@ -21,3 +21,17 @@ def assert_scan_equal(actual, expected):
     np.testing.assert_allclose(actual.doses, expected.doses)
     for attr in ("type", "radiation_type", "energy", "SSD", "field_size", "startpoint"):
         assert getattr(actual, attr) == getattr(expected, attr)
+
+
+def array_measurement(kind, temporal=False):
+    scan = Measurement()
+    scan.type = kind
+    axes = (np.array([4.0, 1.0, -2.0]), np.array([-3.0, 2.0]), np.array([-2.0, -0.5, 1.0, 4.0]))
+    scan.axes = axes[-kind.spatial_ndim :]
+    spatial_shape = tuple(len(axis) for axis in scan.axes)
+    scan.doses = np.arange(np.prod(spatial_shape), dtype=float).reshape(spatial_shape)
+    if temporal:
+        scan.acquisition_type = AcquisitionType.TimeSeries
+        scan.times = np.array([0.1, 0.2])
+        scan.doses = np.stack((scan.doses, scan.doses + 100))
+    return scan

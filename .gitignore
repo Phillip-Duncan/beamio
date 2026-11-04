@@ -63,5 +63,7 @@ Thumbs.db
 *.asc
 *.mcc
 *.prm
+*.smcm
+*.dcm
 *.snctxt
 *.sncxml

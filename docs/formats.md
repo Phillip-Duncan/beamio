@@ -7,11 +7,14 @@
 | SNC SunDOSE XML (read only) | `beamio.rfa.SNCSunScan` | `.sncxml` | `BeamDataFactory.from_file(path)` |
 | PTW Mephysto MCC water-tank scans (read only) | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
 | SNC IC PROFILER acquisitions (read only, version 25 validated) | `beamio.rfa.ICProfiler` | `.prm` | `BeamDataFactory.from_file(path)` |
+| SNC SRS MapCHECK dose maps and raw movies (read only, revision A validated) | `beamio.rfa.SRSMapCheck` | `.txt`, `.smcm` | `BeamDataFactory.from_file(path)` |
 | RayStation 2025+ measured-curves CSV | `beamio.tps.raystation.Raystation` | `.csv` | Use the class explicitly |
 
 `BeamDataFactory.is_supported_file(path)` checks the extension only; `from_file`
 reads file contents to identify a supported reader. Extension discovery
-currently returns `['asc', 'mcc', 'prm', 'snctxt', 'sncxml']`.
+currently returns `['asc', 'mcc', 'prm', 'smcm', 'snctxt', 'sncxml', 'txt']`.
+The `.txt` extension is shared by many formats; it does not identify an SRS
+MapCHECK file by itself. Content detection requires its first-line signature.
 
 ## IBA Accept
 
@@ -139,8 +142,8 @@ from beamio.rfa import BeamDataFactory, ICProfiler
 
 acquisition = BeamDataFactory.from_file("measurement.prm")
 crossline, inline, positive_diagonal, negative_diagonal = acquisition.measurements
-first = ICProfiler("measurement.prm", frame=0).parse()
-absolute = ICProfiler("measurement.prm", absolute=True).parse()
+first = crossline.doses[0]
+last = crossline.doses[-1]
 ```
 
 The reader is validated with version 25 IC PROFILER acquisitions in Y Axis
@@ -150,9 +153,12 @@ identifying the version and file and noting that results may be incorrect.
 Version 25 emits no compatibility warning. Missing or empty Version headers
 remain errors. The TYPE table identifies
 detector columns and auxiliary channels. Each Data row contains cumulative raw
-counts, so the default profiles use the final row, without summing the frames.
-`frame` selects a cumulative frame by Python index, including negative indices;
-it does not select an interval or subtract the preceding frame.
+counts. By default each axis is a shared `Measurement` with
+`acquisition_type=AcquisitionType.TimeSeries`, `doses[T, detector]`, and
+`times[T]` in seconds. Spatial positions and coordinates have no time dimension.
+The reader retains every calibrated cumulative signal without summing raw
+rows. Its constructor takes only a file path. Selection and signal
+transformations use the shared arrays directly.
 
 Relative dose follows the definitions embedded in these PRM files:
 
@@ -160,15 +166,16 @@ Relative dose follows the definitions embedded in these PRM files:
 corrected counts = (RawCount - TIMETIC * BIAS1) * Calibration
 ```
 
-TIMETIC is the selected Data row's elapsed tick value. The BIAS1 row's own tick
+TIMETIC is each Data row's elapsed tick value. The BIAS1 row's own tick
 value describes the background acquisition and is not subtracted from TIMETIC.
 Negative signals remain negative. No normalization, reference division, or
 temperature/pressure correction is applied. Ignored detectors (`IgnoreDet=1`)
 keep their positions and raw counts, with NaN in `doses`; no interpolation is
-performed. `absolute=True` multiplies corrected counts by the acquisition's
-Dose Per Count and requires its Absolute Calibration flag to be true and the
-factor positive. The reference detector's separate calibration is not used.
-The PRM factor defines the absolute output scale; beamio does not assume Gy.
+performed. Absolute calibration flags and Dose Per Count remain source
+metadata; the reader does not apply that scaling. Callers can multiply the
+arrays explicitly when their calibration is applicable. The reference
+detector has a separate factor which is not used for the profile signals.
+No Gy unit is inferred from the PRM factor.
 
 The four measurements are X/crossline, Y/inline, PD/positive diagonal, and
 ND/negative diagonal, in that order. The exported detector IDs define a
@@ -193,22 +200,18 @@ beam metadata are accepted; Undefined energy or modality remains unset.
 Active static/dynamic wedge angles and beam angles are mapped to shared fields;
 a Wedge type of None gives zero wedge angle even if a stale angle is present.
 
-Acquisition-level attributes retain the source data:
+`file_meta` holds the original headers, plus `file_meta["IC Profiler"]` with
+`Detector IDs`, `Leak Rates`, `Calibration`, `Ignored Detectors`, `Updates`,
+`Pulses` and `Statuses`. Counter vectors align with Measurement.times; pulse
+counts retain their native cumulative convention. These vectors are independent
+copies, so they do not keep the raw parsing table alive through NumPy views.
 
-| Attribute | Contents |
-| --- | --- |
-| `columns` | TYPE column names, excluding the TYPE cell itself |
-| `data` | All numeric frames, with columns matching `columns`; includes sensors and reference readings |
-| `detector_ids` | X/Y/PD/ND detector names in exported column order |
-| `leak_rates`, `calibration`, `ignored_detectors` | Arrays aligned with `detector_ids` |
-| `file_meta` | Header fields with nested dictionaries for named sections; repeated calibration field names remain separate |
-
-Each measurement retains independent header metadata under `IC Profiler Header`
-and its axis, detector IDs, ignore mask, raw counts, correction factors, frame
-index/count, selected TIMETIC, and dose scale under `IC Profiler`. `convert()`
-copies the measurements and their metadata; the reader's full acquisition
-`data` array remains on the source instance. Existing target writers determine
-which metadata can be represented in their exports.
+Each Measurement contains its signal/geometry and relevant metadata:
+`Cumulative`, `Dose Scale`, and its `IC Profiler` axis and detector IDs.
+There are no full header copies, source-column indices, or duplicate raw
+count arrays. Raw tables and unused auxiliary channels are released after
+parsing; the reader has no persistent `data` attribute. `convert()` copies
+the shared measurements and metadata.
 
 Other orientations, detector layouts/spacings, concatenated/imported
 acquisitions, and PRM writing are not implemented. Missing calibration rows,
@@ -219,7 +222,7 @@ stop-frame decreases observed in three supplied acquisitions.
 When present, Total Pulses must match the final pulse counter and Total Time
 must match the final elapsed tick value within summary rounding precision
 (10 microseconds plus 1 ppm). Totals are checked against the complete table
-before selecting a frame, detecting exports missing complete final updates.
+before exposing the data, detecting exports missing complete final updates.
 Free-text headers retain colon-terminated values; only known compound headers
 split secondary labels. Automatic detection scans complete PRM header lines,
 including descriptions longer than the initial sniffing buffer.
@@ -229,88 +232,223 @@ The implementation was exercised against all 773 acquisitions supplied from
 Energy, F & S, and Wedge60, alongside synthetic regression and conversion tests.
 The automated test suite does not depend on those external directories.
 
-### Time series and beam centre
+### Shared time-series arrays and analysis
 
 ```python
-acquisition = ICProfiler("measurement.prm").parse()
-x = acquisition.time_series("X")
-# Arrays: x.times[frame], x.positions[detector], x.doses[frame, detector]
-signal = x.detector("X33")     # calibrated signal across every frame
-times = x.times[10:20]        # timestamps for a selected range of frames
-samples = signal[10:20]      # corresponding detector samples
-edges = x.field_edges()       # left/right inflection points, mm
-widths = x.field_width()      # distance between selected edges, mm
-centers = acquisition.beam_center()
-# centers.times is in seconds; centers.x and centers.y are in mm
-fwhm = acquisition.beam_center(method="FWHM")
+import numpy as np
+from beamio.rfa import ICProfiler
+from beamio.profile import beam_center
+
+reader = ICProfiler("measurement.prm").parse()
+x = reader.measurements[0]
+samples = x.doses[10:20]         # cumulative [frame, detector]
+times = x.times[10:20]
+trace = x.doses[:, 31]           # X33 for the standard column order
+intervals = np.diff(x.doses, axis=0, prepend=np.zeros_like(x.doses[:1]))
+centers = [beam_center(x.positions, frame) for frame in intervals]
+cumulative = np.cumsum(intervals, axis=0)  # native cumulative signals again
+factor = float(reader.file_meta["Dose Calibration"]["Dose Per Count"])
+scaled = x.doses * factor        # caller-side scaling when appropriate
 ```
 
-`time_series(axis)` accepts X, Y, PD, or ND. The result is an
-`ICProfilerTimeSeries` containing calibrated `doses`, `positions`, `detector_ids`,
-`times`, `durations`, `pulses`, `updates`, `statuses`, and `valid_frames`.
-`series.detector(detector_id)` returns a copy of one detector's calibrated
-signal as a one-dimensional array aligned with `series.times`. Detector IDs
-must belong to the selected axis and physically exist; for example, X32 is
-absent and raises an error. Slice detector signals or the full `doses` matrix
-with ordinary NumPy indexing to select frames. Raw cumulative detector counts
-are also available as `acquisition.data[:, acquisition.columns.index("X33")]`.
-`times` are exported TIMETIC values divided by 1,000,000, measured from
-acquisition start. The first time is usually the end of the first collection
-interval. Original frame order and timestamps are retained.
+Calibration uses each raw row's TIMETIC. All cumulative readings are retained,
+including beam-off updates, without masking frames by pulse count or duration.
+Ignored diode signals remain NaN without removing their positions. TIMETIC is
+divided by 1,000,000 for shared `times` in seconds. Exported frame order and
+stop-clock anomalies are preserved.
 
-The default is an interval series: subtract the preceding cumulative counts,
-ticks, and pulses, then apply leakage correction and array calibration. The
-first interval starts from zero counts/ticks/pulses. Dose is the signal added
-during that interval, without division by its duration. `durations` are tick
-differences in seconds and `pulses` are pulses added during each interval.
-Nonpositive duration or no new pulses gives `valid_frames=False` and NaN doses,
-including the anomalous stop-frame timestamps noted above. No neighbouring
-frames are merged. Ignored detector doses remain NaN.
+The source already contains cumulative counts, so `cumsum` must not be
+applied directly to those readings to calculate total signal. Differences
+give per-update signal; the first interval recipe above uses zero before the
+first exported reading. Users decide whether to include updates using shared
+timestamps or the `Pulses`/`Statuses` acquisition metadata vectors. No reader options choose a frame,
+change cumulative/interval representation, or apply absolute dose scaling.
 
-`cumulative=True` returns integrated profiles and cumulative pulse counts.
-For cumulative data, validity requires positive elapsed time and cumulative
-pulses; a small stop-frame timestamp reversal does not invalidate its integrated
-profile. `durations` still describes the intervals between updates. Both modes
-use every acquisition frame, independently of the reader's `frame=` selection,
-and honour its `absolute=` calibration choice. Returned arrays can be edited
-without changing the acquisition's raw data or measurements.
+Profile analysis remains in [beamio.profile](profiles.md). Select a frame
+with NumPy or loop over rows. Curve writers require an explicitly constructed
+static Measurement; see [measurement arrays](measurements.md) for selection
+and export examples. The former vendor-specific time-series/result classes
+and frame/analysis methods are replaced by these shared arrays.
 
-`beam_center()` returns an `ICProfilerBeamCenter` with `times`, `x`, `y`, and a
-`valid_frames` mask indicating detectable centres on both axes. All edge,
-centre, and width methods accept `method="InflectionPoint"` (the default) or
-`method="FWHM"`. Centre is the midpoint of the selected pair of edges; width
-is their separation. The returned centre result records the selected `method`.
-These calculations delegate to the public, vendor-independent `beamio.profile`
-module, which accepts a measurement's position/dose arrays from any reader. See
-[profile analysis](profiles.md) for the single-profile API and caller-side loops.
+## SNC SRS MapCHECK
 
-InflectionPoint locates the strongest rising and falling spatial derivatives.
-Finite differences are divided by the actual detector separation in mm and
-located at interval midpoints. Isolated gradient extrema are refined using a
-quadratic through the three neighbouring derivative samples. A contiguous flat
-maximum uses its physical midpoint; separated equally strong maxima are
-ambiguous and give NaN. Both extrema must have finite neighbours within the
-array and enclose the profile maximum. Missing edge samples are not bridged.
-Missing samples outside the candidate inflection edges are conservatively
-treated as ambiguous, since they could conceal the true outer penumbra.
-No smoothing or resampling is applied. This follows the
-[derivative-extremum definition of inflection edges](https://pylinac.readthedocs.io/en/latest/field_analysis.html#inflection-derivative);
-coarse detector spacing and noise limit the estimated edge precision.
+`SRSMapCheck(path).parse()` reads model 1179 measured text exports and raw
+`.smcm` movies. Automatic detection uses the first nonblank
+`SRS MapCHECK Measurement File:` line and its `Measured File` or
+`Raw Movie Data` label, independently of extension. Revision A is validated;
+other nonempty revisions are attempted with a `UserWarning` and the same
+structural checks. UTF-8, UTF-8 BOM, and CP1252 text are supported. DICOM plans
+and reference dose files, and SRS MapCHECK writing, are not implemented.
 
-FWHM locates crossings at 50% of each frame's measured maximum, with linear
-interpolation on the actual detector positions. With `method="FWHM"`,
-`level=0.25`, for example, selects quarter-maximum crossings instead. `level`
-only affects FWHM; the result's `level` is None for InflectionPoint. Beam shape,
-including FFF and wedge gradients, affects these geometric metrics; no
-vendor-specific beam-centering correction is applied.
+### Measured maps
 
-The default `min_signal=0.05` rejects frames whose positive peak is less than
-5% of the strongest usable frame on that axis. Set `min_signal=0` to disable
-this relative signal threshold. The same arguments are available on the
-single-axis series' `beam_center()`, `field_edges()`, and `field_width()` methods.
-Frames without two usable edges, with an ignored sample needed for an edge,
-or with no positive peak give NaN. FWHM additionally rejects separated
-above-threshold regions. No edge is extrapolated beyond the array.
+```python
+from beamio.rfa import SRSMapCheck
+
+reader = SRSMapCheck("measurement.txt").parse()
+plane = reader.measurements[0]
+dose = plane.doses                # vendor's Dose Interpolated, [y, x]
+y_mm, x_mm = plane.axes
+```
+
+A measured file produces one `MeasurementType.DosePlane` with
+`AcquisitionType.Static` and `times=None`. Its `doses` references the exported
+**Dose Interpolated** table without a duplicate copy. **Interpolated** is the
+normalized table in the examples and is not selected as the measurement signal. Final dose values
+are not recalibrated, normalized, masked, clipped, or interpolated again.
+The reader retains the numerical dose scale without inferring a unit from
+unlabelled table values. Exported zeros and Data Flags remain unchanged.
+
+The parser checks every named grid, including available background,
+calibration, raw/corrected counts, Dose Counts, Data Flags and interpolated
+tables. Tables require complete rows/columns, finite values, monotonic axes,
+and consistent geometry. Dose Interpolated is mandatory; missing or truncated
+final data raises an error instead of falling back to an intermediate table.
+Only the final signal array is retained; unused intermediate grids are
+released and are not exposed through a separate reader data container.
+
+Xcm/Ycm convert to millimetres, preserving table order. Supplied grids are
+45 by 45, with increasing X, decreasing Y, and 1.75 mm grid increments.
+`plane.doses[i, j]` corresponds to `(plane.axes[1][j], plane.axes[0][i])`.
+
+### Raw movies
+
+```python
+reader = SRSMapCheck("measurement.smcm").parse()
+movie = reader.measurements[0]
+image = movie.doses[10]           # cumulative raw counts [y, x]
+images = movie.doses[10:20]       # [frame, y, x]
+times = movie.times[10:20]        # seconds
+trace = movie.doses[:, 22, 22]
+source = reader.file_meta["SRS MapCHECK"]
+pulses = source["Pulses"]       # cumulative pulse count for every movie update
+updates = source["Updates"]
+statuses = source["Statuses"]
+```
+
+A movie produces one `DosePlane` / `TimeSeries` Measurement. `doses` is a
+three-dimensional NumPy array with a leading time dimension. Original
+cumulative detector counts are mapped using exported detector coordinates.
+Unmeasured sites use linear X and Y neighbour estimates at their actual physical
+positions. For an interior gap, compare the absolute differences between the
+two measured neighbours on each axis. If those contrasts differ by more than
+10% of the current frame's largest absolute detector count, use the estimate
+from the flatter direction. Otherwise average the two estimates. This avoids
+equally blending a steep penumbra direction with its flatter perpendicular
+direction. It uses both spatial directions locally, without a global spline
+fit or temporal interpolation. All estimates stay within their contributing
+neighbours' range; no overshoot or smoothing of measured samples is introduced.
+
+The movie samples are already cumulative detector totals. Each cumulative
+frame is interpolated independently, so `movie.doses[-1]` is the whole
+acquisition's raw-count map with interpolation performed **after detector
+accumulation**. It equals interpolating the sum of the raw per-update detector
+increments. Do not sum the cumulative movie frames; this would repeatedly
+count earlier signal. Interpolating separate increments before summing can
+give a different result because direction selection is nonlinear; the reader
+does not follow that route. An additional post-sum raw map would duplicate
+the final frame already available through NumPy indexing.
+
+Perimeter gaps with two measured neighbours on their available axis use that
+linear bracket. They are inside the measured extent and require no
+extrapolation. This fills all 88 formerly missing perimeter sites on the
+supplied 45-by-45 movie grids. A site without a measured bracket remains NaN;
+newly interpolated samples are never used as neighbours to extend coverage.
+Original measured samples, including negative/zero counts, are unchanged.
+
+The directional rule is inferred from the supplied revision-A exports, rather
+than a manufacturer-published specification. Applying the 10%-of-peak rule
+to Corrected Counts reproduces all 14,784 interpolated interior sites in the
+16 exported relative **Interpolated** tables to floating-point precision.
+The absolute **Dose Interpolated** tables instead match the same directional
+rule with a threshold of 10 in their exported dose units. Raw movies use the
+relative rule so interpolation is independent of count scale. Their peak and
+direction selection are calculated separately for each cumulative frame.
+Direction selection can change between frames, so differencing interpolated
+pixels need not equal interpolating per-update counts. Use physical detector
+sites when an original detector time trace is required.
+For negative signals, beamio uses peak magnitude. The supplied measured
+exports leave unmeasured perimeter sites as zero with Data Flags=0; the movie
+reader instead interpolates bracketed perimeter gaps. Measured text maps
+continue to preserve their exported final tables exactly.
+
+Movie values remain **raw counts**. Matching the relative gap-filling rule
+does not reconstruct SNC Patient's calibrated dose or its final dose table.
+Calibration, temperature, angular, field-size, dose-rate and couch corrections
+are not reconstructed. Metadata records `Dose Scale`, `Cumulative`, and
+`Interpolation` explicitly. Measurement.doses is the retained signal array;
+original readings are preserved at the physical detector sites. There is no
+second raw acquisition table stored on the reader.
+
+Interpolation estimates unmeasured values; it does not provide additional
+independent detector measurements or guarantee recovery of a narrow feature.
+Physical detector coordinates in `file_meta["SRS MapCHECK"]` identify the
+original sample sites. Sun Nuclear discusses detector spacing and sampling
+limits in [Stereotactic QA Arrays: Resolution and Detector Spacing](https://www.sunnuclear.com/about/news/stereotactic-qa-arrays-resolution-and-detector-spacing).
+
+Movie `file_meta["SRS MapCHECK"]` contains `Detector IDs`, `Detector Coordinates`
+in XY mm, `Corrections`, `Updates`, `Pulses` and `Statuses`. Correction metadata
+retains available Background, Calibration(AP), Calibration(PA), AP Open,
+PA Open and DetectorFlags vectors in detector order, without applying them.
+Counter vectors are independent copies aligned with movie.times. Raw channel
+indices, unused auxiliary readings, and the complete raw table are discarded
+after mapping the data. Detector IDs/coordinates still identify the measured
+sites within the shared spatial grid.
+
+Movie TIMETIC is milliseconds, divided by 1000 for `movie.times` in seconds.
+The first update can start after zero; the original time origin and frame
+order are retained. Update numbers must be consecutive; pulses and ticks must
+be nonnegative integral counters that do not decrease. Available Update Count,
+Total Pulses and Total Time summaries must match the complete acquisition
+before exposing the data.
+
+Every movie frame is exposed through the shared Measurement arrays. Select
+frames or ranges with `movie.doses[index]` / `movie.doses[start:stop]` and the
+same indices on `movie.times`. Reader-specific frame selectors and grid
+accessors are not provided.
+
+#### FFF beams and comparison with measured text maps
+
+The interpolation rule applies to flattened and FFF acquisitions. A raw movie
+can nevertheless look spotty even in a smooth high-dose region, because the
+individual detector sensitivities have not been corrected. Interpolation
+preserves those measured detector readings; it does not smooth them away.
+The companion measured text export's **Dose Interpolated** table instead uses
+corrected detector signals and dose calibration. Comparing it with the final
+raw movie frame therefore compares different signal processing, even after
+normalizing both images to their peaks.
+
+The supplied paired movie/text exports have identical final raw detector
+counts. The FFF high-dose pattern is largely removed by applying the embedded
+background and AP array calibration factors in the supplied fixed-field
+examples, but this alone does not reproduce every SNC correction or establish
+a general calibrated movie pipeline. SNC describes per-update background,
+array, temperature, angular, dose-rate and field-size corrections followed by
+accumulation in its [SNC Patient Software Reference Guide, Dose Calculation
+for SRS MapCHECK](https://www.scribd.com/document/1067588820/SNC-Patient-Software-Reference-Guide-RevC).
+Load the measured `.txt` explicitly when the vendor's final calibrated dose
+map is needed. A second raw-count aggregate would not supply that map.
+
+### Geometry, metadata and conversion
+
+Spatial coordinates have shape `(Ny, Nx, 3)`, independently of the number of
+frames. They remain device-local, with Z=0 denoting the detector plane rather
+than a water-equivalent depth. Angles, orientation and setup shifts remain
+metadata; no patient/beam coordinate transform is inferred. Measurement beam
+energy comes from Measurement Info / Beam Energy, rather than earlier array
+or dose calibration energies. Declared energies are photon beams; undeclared
+energy, SSD, nominal field size and wedge angle remain unset.
+
+`file_meta` preserves header sections and labels once. Measurement metadata
+retains only relevant source/coordinate conventions and common signal metadata;
+frame selection belongs to NumPy indexing. Full headers are not duplicated
+on measurements. Optional vendor checksum footers are retained
+but not verified.
+
+Conversion deep-copies the shared plane/time series. Current curve writers
+reject these layouts; users must explicitly select a frame and a 1D profile
+and provide suitable geometry for a curve export. See
+[measurement arrays](measurements.md) for examples, including dose volumes.
 
 ## RayStation
 

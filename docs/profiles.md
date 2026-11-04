@@ -86,9 +86,10 @@ returns NaN. The profile functions do not compare signals between profiles.
 ## Selecting profiles from a time series
 
 ```python
+import numpy as np
 from beamio.profile import beam_center
 
-series = acquisition.time_series("X")
+series = acquisition.measurements[0]  # shared crossline TimeSeries Measurement
 selected_frames = [0, 1, 2]
 times = series.times[selected_frames]
 centers = [
@@ -100,10 +101,11 @@ centers = [
 Frame selection and iteration belong to the caller. The public functions have
 no frame mask, time-series input, or acquisition state.
 
-`ICProfilerTimeSeries.field_edges()`, `field_width()`, and `beam_center()`
-handle their own frame-validity masks and relative signal filtering, then
-call the single-profile function for each selected frame. On these series
-methods, `min_signal` retains its acquisition-specific meaning: a fraction of
-the strongest valid frame (default 0.05). IC Profiler's acquisition-level
-`beam_center()` uses those methods for X and Y. Calibration, timestamps, and
-pulse/timing validity remain the acquisition reader's responsibility.
+IC Profiler returns every frame as shared Measurement arrays, preserving the
+native cumulative corrected counts. To analyze interval profiles, calculate
+`np.diff(series.doses, axis=0, prepend=np.zeros_like(series.doses[:1]))` and
+iterate over the resulting rows. Timestamp/pulse validity and relative signal
+filtering belong to the caller. `min_signal` on the public profile functions
+is always an absolute threshold in the supplied signal units. For a plane
+time series, select a row or column explicitly, such as
+`plane.doses[frame, row, :]` with `plane.axes[1]`.

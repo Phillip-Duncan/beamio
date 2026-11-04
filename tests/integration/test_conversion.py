@@ -1,13 +1,150 @@
+from copy import deepcopy
+
 import numpy as np
 import pytest
 
-from beamio.common.measurement import MeasurementType
-from beamio.rfa import IBAAccept6, ICProfiler, PTWMCC, SNCSunScan
+from beamio.common import AcquisitionType, MeasurementType
+from beamio.rfa import IBAAccept6, ICProfiler, PTWMCC, SNCSunScan, SRSMapCheck
 from beamio.tps.raystation import Raystation
-from tests.support.measurements import assert_scan_equal
+from tests.support.measurements import array_measurement, assert_scan_equal
 from tests.support.icprofiler import prm_export
 from tests.support.ptw import mcc_export, mcc_scan
 from tests.support.snc import SNC_TEXT, xml_export
+from tests.support.srsmapcheck import DOSE, measured_export, movie_export
+
+
+@pytest.mark.parametrize(
+    "target,suffix", [(IBAAccept6, ".asc"), (Raystation, ".csv"), (SNCSunScan, ".snctxt")]
+)
+def test_srsmapcheck_explicit_static_row_converts_with_local_coordinates(tmp_path, target, suffix):
+    path = tmp_path / "map.txt"
+    path.write_text(measured_export())
+    source = SRSMapCheck(path).parse()
+    converted = source.convert(target)
+    plane = converted.measurements[0]
+    converted.file_meta["Header"]["File Name"] = "changed"
+    assert source.file_meta["Header"]["File Name"] == "Synthetic export"
+    # The caller explicitly selects a 1D row from the shared plane model.
+    row = deepcopy(plane)
+    row.type = MeasurementType.CrosslineProfile
+    row.positions = plane.axes[1].copy()
+    row.doses = plane.doses[1].copy()
+    row.coordinates = plane.coordinates[1].copy()
+    row.startpoint, row.endpoint = tuple(row.coordinates[0]), tuple(row.coordinates[-1])
+    row.validate()
+    converted.measurements = [row]
+    destination = tmp_path / ("row" + suffix)
+    converted.save(destination)
+    actual = target(destination).parse().measurements[0]
+    assert actual.type == MeasurementType.CrosslineProfile
+    assert actual.energy == 6
+    tolerance = 0.11 if target is IBAAccept6 else 1e-9
+    np.testing.assert_allclose(actual.positions, row.positions, atol=tolerance)
+    np.testing.assert_array_equal(actual.doses, DOSE[1])
+    np.testing.assert_allclose(actual.startpoint, row.startpoint, atol=tolerance)
+
+
+def test_srsmapcheck_movie_requires_explicit_frame_and_row_for_curve_export(tmp_path):
+    path = tmp_path / "movie.smcm"
+    path.write_text(movie_export())
+    source = SRSMapCheck(path).parse()
+    series = source.measurements[0]
+    row = deepcopy(series)
+    row.type = MeasurementType.CrosslineProfile
+    row.acquisition_type = AcquisitionType.Static
+    row.times = None
+    row.positions = series.axes[1].copy()
+    row.doses = series.doses[-1, 1].copy()
+    row.coordinates = series.coordinates[1].copy()
+    row.startpoint, row.endpoint = tuple(row.coordinates[0]), tuple(row.coordinates[-1])
+    row.validate()
+    converted = source.convert(SNCSunScan)
+    converted.measurements = [row]
+    destination = tmp_path / "row.snctxt"
+    converted.save(destination)
+    actual = SNCSunScan(destination).parse().measurements[0]
+    np.testing.assert_array_equal(actual.doses, series.doses[-1, 1])
+    np.testing.assert_array_equal(actual.coordinates, row.coordinates)
+
+
+@pytest.mark.parametrize(
+    "target,suffix", [(IBAAccept6, ".asc"), (SNCSunScan, ".snctxt"), (Raystation, ".csv")]
+)
+@pytest.mark.parametrize(
+    "kind,temporal",
+    [
+        (MeasurementType.CrosslineProfile, True),
+        (MeasurementType.DosePlane, False),
+        (MeasurementType.DosePlane, True),
+        (MeasurementType.DoseVolume, False),
+        (MeasurementType.DoseVolume, True),
+    ],
+)
+def test_curve_writers_reject_unsupported_layouts_before_changing_output(
+    tmp_path, target, suffix, kind, temporal
+):
+    beam = target("")
+    scan = array_measurement(kind, temporal)
+    scan.validate()
+    beam.measurements = [scan]
+    destination = tmp_path / ("existing" + suffix)
+    destination.write_text("keep this file")
+    with pytest.raises(ValueError, match="only static 1D"):
+        beam.save(destination)
+    assert destination.read_text() == "keep this file"
+
+
+@pytest.mark.parametrize(
+    "target,suffix", [(IBAAccept6, ".asc"), (SNCSunScan, ".snctxt"), (Raystation, ".csv")]
+)
+@pytest.mark.parametrize("invalid", ["type", "shape", "times", "coordinates"])
+def test_writers_validate_supported_measurements_before_replacing_output(
+    tmp_path, measurement, target, suffix, invalid
+):
+    beam = target("")
+    broken = deepcopy(measurement)
+    if invalid == "type":
+        broken.type = None
+    elif invalid == "shape":
+        broken.doses = broken.doses[:1]
+    elif invalid == "times":
+        broken.times = np.array([0.1])
+    else:
+        broken.coordinates = np.column_stack(broken.reconstruct_xyz())
+        broken.coordinates[1, 2] += 1
+    # A valid first measurement must not cause a partial write if the next fails.
+    beam.measurements = [measurement, broken]
+    destination = tmp_path / ("existing" + suffix)
+    destination.write_text("keep this file")
+    with pytest.raises(ValueError):
+        beam.save(destination)
+    assert destination.read_text() == "keep this file"
+
+
+@pytest.mark.parametrize("kind", [MeasurementType.DosePlane, MeasurementType.DoseVolume])
+@pytest.mark.parametrize("temporal", [False, True])
+def test_conversion_preserves_shared_grid_geometry_and_time_without_aliasing(kind, temporal):
+    source = SNCSunScan("")
+    scan = array_measurement(kind, temporal)
+    scan.coordinates = np.stack(scan.reconstruct_xyz(), axis=-1)
+    source.measurements = [scan]
+    converted = source.convert(Raystation)
+    actual = converted.measurements[0]
+    actual.validate()
+    assert actual.type is kind
+    assert actual.acquisition_type is scan.acquisition_type
+    np.testing.assert_array_equal(actual.doses, scan.doses)
+    np.testing.assert_array_equal(actual.coordinates, scan.coordinates)
+    for a, b in zip(actual.axes, scan.axes):
+        np.testing.assert_array_equal(a, b)
+        assert not np.shares_memory(a, b)
+    if temporal:
+        np.testing.assert_array_equal(actual.times, scan.times)
+        assert not np.shares_memory(actual.times, scan.times)
+    actual.doses[...] = -123
+    actual.coordinates[...] = -456
+    assert not np.any(scan.doses == -123)
+    assert not np.any(scan.coordinates == -456)
 
 
 @pytest.mark.parametrize(
@@ -17,6 +154,12 @@ def test_icprofiler_conversion_preserves_four_profiles(tmp_path, target, suffix)
     source_path = tmp_path / "source.prm"
     source_path.write_text(prm_export())
     source = ICProfiler(source_path).parse()
+    # The caller selects static final profiles using the shared arrays.
+    for measurement in source.measurements:
+        measurement.doses = measurement.doses[-1].copy()
+        measurement.acquisition_type = AcquisitionType.Static
+        measurement.times = None
+        measurement.validate()
     output_path = tmp_path / ("converted" + suffix)
     converted = source.convert(target)
     converted.save(output_path)
@@ -38,9 +181,9 @@ def test_icprofiler_conversion_preserves_four_profiles(tmp_path, target, suffix)
             )
         if target is not IBAAccept6:
             assert scan.metadata["FluenceMode"] == "FFF"
-    converted.measurements[0].metadata["IC Profiler"]["Calibration"][0] = 100
-    converted.measurements[0].metadata["IC Profiler Header"]["Machine Data"]["Energy"] = "15 MV"
-    assert source.measurements[0].metadata["IC Profiler"]["Calibration"][0] == 2
+    converted.file_meta["IC Profiler"]["Calibration"][0] = 100
+    converted.file_meta["Machine Data"]["Energy"] = "15 MV"
+    assert source.file_meta["IC Profiler"]["Calibration"][0] == 2
     assert source.file_meta["Machine Data"]["Energy"] == "6 MV"
 
 

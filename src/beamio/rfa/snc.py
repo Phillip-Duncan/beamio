@@ -12,6 +12,7 @@ import numpy as np
 from beamio import __version__
 from beamio.common.beamdata import BeamData
 from beamio.common.measurement import (
+    AcquisitionType,
     Measurement,
     MeasurementType,
     RadiationType,
@@ -307,28 +308,30 @@ class SNCSunScan(BeamData):
         return result
 
     def _scan_lines(self, measurement: Measurement) -> list[str]:
+        kind = measurement.type
+        if (
+            measurement.acquisition_type is not AcquisitionType.Static
+            or kind is None
+            or kind not in SCAN_NAMES
+        ):
+            raise ValueError(
+                "SNC output supports only static 1D measurements; "
+                "select a frame and/or profile explicitly before exporting."
+            )
+        measurement.validate()
         scan = copy.copy(measurement)
         positions, doses = np.asarray(scan.positions, dtype=float), np.asarray(
             scan.doses, dtype=float
         )
-        if (
-            positions.ndim != 1
-            or doses.ndim != 1
-            or positions.shape != doses.shape
-            or not positions.size
-        ):
-            raise ValueError(
-                "SNC output requires nonempty, matching one-dimensional positions and doses."
-            )
-        if scan.type not in SCAN_NAMES or scan.startpoint is None:
-            raise ValueError("SNC output requires a supported scan type and a startpoint.")
-        if scan.endpoint is None and scan.type != MeasurementType.DiagonalProfile:
+        if scan.startpoint is None:
+            raise ValueError("SNC output requires a startpoint.")
+        if scan.endpoint is None and kind != MeasurementType.DiagonalProfile:
             endpoint = list(scan.startpoint)
             axis = {
                 MeasurementType.CrosslineProfile: 0,
                 MeasurementType.InlineProfile: 1,
                 MeasurementType.DepthDose: 2,
-            }[scan.type]
+            }[kind]
             endpoint[axis] = float(positions[-1])
             scan.endpoint = tuple(endpoint)
         xyz = np.column_stack(scan.reconstruct_xyz())
@@ -349,8 +352,8 @@ class SNCSunScan(BeamData):
                 "Beam Type": beam_type,
                 "Summary Energy (MV/MeV)": energy,
                 "Energy (MV / MeV)": energy,
-                "Summary Scan Type": SCAN_NAMES[scan.type],
-                "Scan Type": SCAN_NAMES[scan.type],
+                "Summary Scan Type": SCAN_NAMES[kind],
+                "Scan Type": SCAN_NAMES[kind],
                 "Summary Wedge Angle (degrees)": wedge,
                 "Wedge Angle (degrees)": wedge,
                 "Source to Surface Distance (cm)": (

@@ -13,6 +13,7 @@ using a shared NumPy-based data model.
 | SNC SunDOSE XML (`.sncxml`) | Yes | No | Yes |
 | PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | No | Yes |
 | SNC IC PROFILER acquisitions (`.prm`, version 25 validated) | Yes | No | Yes |
+| SNC SRS MapCHECK dose maps (`.txt`) and raw movies (`.smcm`, revision A validated) | Yes | No | Yes |
 | RayStation 2025+ measured-curves CSV (`.csv`, semicolon-delimited) | Yes | Yes | No; use `Raystation` directly |
 
 ## Installation
@@ -29,14 +30,14 @@ python -m pip install beamio
 from beamio.rfa import BeamDataFactory, IBAAccept6
 from beamio.tps.raystation import Raystation
 
-# Detect and parse an IBA ASCII, SNC, PTW MCC, or IC Profiler export.
+# Detect and parse an IBA ASCII, SNC, PTW MCC, IC Profiler, or SRS MapCHECK export.
 beam = BeamDataFactory.from_file("measurements.asc")
 # Or select the reader explicitly:
 # beam = IBAAccept6("measurements.asc").parse()
 
 for measurement in beam.measurements:
     print(measurement.type, measurement.energy, measurement.field_size)
-    print(measurement.positions, measurement.doses)
+    print(measurement.axes, measurement.doses)
 
 # Conversion copies measurements and metadata; save writes the target format.
 converted = beam.convert(Raystation)
@@ -67,64 +68,63 @@ in `measurement.metadata["PTW Reference"]`; no reference correction or
 normalization is applied. MCC writing, detector arrays, and diagonal/angled
 MCC scans are not supported. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
 
-IC Profiler acquisitions use `ICProfiler(path).parse()` or automatic detection:
+IC Profiler acquisitions and SRS MapCHECK maps/movies use the same shared
+spatial and temporal measurement model:
 
 ```python
-from beamio.rfa import ICProfiler
+from beamio.rfa import ICProfiler, SRSMapCheck
+from beamio.profile import beam_center
 
 acquisition = ICProfiler("measurement.prm").parse()
-crossline, inline, positive_diagonal, negative_diagonal = acquisition.measurements
-frames = acquisition.data  # all raw frames; column names are in acquisition.columns
+x, y, pd, nd = acquisition.measurements
+profile = x.doses[-1]              # cumulative calibrated counts [detector]
+trace = x.doses[:, 31]             # one detector across time
+times_s = x.times
+centers = [beam_center(x.positions, frame) for frame in x.doses]
+
+plane = SRSMapCheck("measurement.txt").parse().measurements[0]
+dose = plane.doses                # final Dose Interpolated, [y, x]
+y_mm, x_mm = plane.axes
+
+movie = SRSMapCheck("measurement.smcm").parse().measurements[0]
+image = movie.doses[10]            # interpolated raw counts [y, x]
+images = movie.doses[10:20]        # [frame, y, x]
+pixel_trace = movie.doses[:, 22, 22]
 ```
 
-The four profiles use the final cumulative frame, corrected for leakage and
-array calibration using factors embedded in the PRM. Dose remains in corrected
-counts without normalization. Use `frame=0` for the first cumulative frame,
-or `absolute=True` to apply a valid enabled Dose Per Count calibration.
-Positions preserve the detector gaps and diagonal spacing. The reader is
-validated with version 25, Y Axis orientation acquisitions. Other versions
-are attempted with a `UserWarning` that results may be incorrect. Structural
-and data validation still apply. PRM writing is not implemented.
-See [IC Profiler details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md#snc-ic-profiler)
-for geometry and calibration conventions.
+`MeasurementType` describes spatial geometry: depth, crossline, inline, or
+diagonal profiles, `DosePlane`, and `DoseVolume`. `AcquisitionType.Static`
+uses only spatial dimensions; `AcquisitionType.TimeSeries` adds a leading time
+axis with `times` in seconds. Spatial `axes` and optional XYZ `coordinates`
+remain independent of time. `positions` remains the single axis for 1D data.
+Static and temporal volumes are supported by the shared model; see
+[measurement arrays](https://github.com/Phillip-Duncan/beamio/blob/main/docs/measurements.md)
+for construction, validation, coordinate reconstruction, and NumPy indexing.
 
-Time-series access calculates the signal added during each update interval,
-with timestamps in seconds and detector positions in millimetres:
+IC Profiler returns four profile time series containing the file's cumulative,
+leakage-corrected and array-calibrated counts. Every frame is retained. Dose
+Per Count remains metadata for explicit caller-side scaling. Frame selection,
+interval differences and cumulative calculations use NumPy; the reader takes
+only the file path. Version 25 is validated, with compatibility warnings for
+other versions. Detector gaps and signal scale are preserved.
 
-```python
-x = acquisition.time_series("X")  # x.doses[frame, detector], x.times, x.positions
-signal = x.detector("X33")         # one detector across every frame
-times, samples = x.times[10:20], signal[10:20]  # select a range of frames
-centers = acquisition.beam_center()  # centers.times, centers.x, centers.y
-fwhm = acquisition.beam_center(method="FWHM")  # optional threshold-based edges
-```
+SRS MapCHECK returns one static plane for measured text exports or one plane
+time series for movies. Measured doses retain the vendor's exported values.
+Movie samples retain cumulative raw counts, with contrast-adaptive linear
+interpolation of interior gaps and linear interpolation of bracketed perimeter
+gaps. No extrapolation or calibrated movie dose is reconstructed. Header,
+calibration, detector and acquisition-counter metadata
+remain in `file_meta`; signal arrays live only in the measurements. See [format details](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md).
 
-Use `cumulative=True` on `time_series()` or `beam_center()` to
-inspect integrated profiles. Edge, centre, and width calculations default to
-`method="InflectionPoint"`, using spatial-gradient extrema. `method="FWHM"`
-selects half-maximum crossings. Beam centre is the midpoint of the chosen
-edges; low-signal or undetectable frames give NaN.
+The public `beamio.profile` functions accept one position/dose profile at a
+time, using `InflectionPoint` edges by default or optional `FWHM`. Users select
+frames, rows, and columns with NumPy and loop explicitly for analysis.
+`Measurement` contains geometry and acquisition data, with no profile-analysis
+methods. See [profile analysis](https://github.com/Phillip-Duncan/beamio/blob/main/docs/profiles.md).
 
-Profile analysis is also available for any reader or independent arrays:
-
-```python
-from beamio.profile import field_edges, field_width
-
-scan = scans.measurements[0]  # choose a crossline, inline, or diagonal profile
-edges_mm = field_edges(scan.positions, scan.doses, method="FWHM")
-width_mm = field_width(scan.positions, scan.doses)
-```
-
-These helpers share the same InflectionPoint/FWHM implementation used by IC
-Profiler. Measured width is the field size along the profile axis; `field_size`
-holds the nominal X/Y field size. See [profile analysis](https://github.com/Phillip-Duncan/beamio/blob/main/docs/profiles.md)
-for selecting profiles, repeated coordinates, and input handling.
-
-`BeamData` provides `parse()`, `save()`, and `convert()`. Each `Measurement`
-contains NumPy `positions` and `doses` arrays, a `MeasurementType`, a
-`RadiationType`, energy, SSD, field size, scan endpoints, and a metadata
-dictionary. The shared spatial fields use millimetres. Dose values use each
-reader's documented scale; conversion does not normalize or calibrate them.
+Existing IBA, SNC tank text, and RayStation writers accept only static 1D
+measurements. Planes, volumes, and time series require explicit selection of
+the frame/profile to export and otherwise raise an error before writing.
 
 Conversion transfers the shared model and copies metadata, but format-specific
 writers may use defaults or omit unsupported metadata. In particular, the
@@ -164,6 +164,7 @@ GitHub releases, and PyPI publishing. `pyproject.toml` is the version source;
 
 ## Documentation
 
+- [Spatial and temporal measurement arrays](https://github.com/Phillip-Duncan/beamio/blob/main/docs/measurements.md)
 - [Architecture and shared data model](https://github.com/Phillip-Duncan/beamio/blob/main/docs/architecture.md)
 - [Format support and conversion behavior](https://github.com/Phillip-Duncan/beamio/blob/main/docs/formats.md)
 - [Public profile analysis](https://github.com/Phillip-Duncan/beamio/blob/main/docs/profiles.md)
