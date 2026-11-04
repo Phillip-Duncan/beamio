@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-11-04)
+
+### Features
+
+- **io**: Add native writers and conversion validation
+  ([`78d6421`](https://github.com/Phillip-Duncan/beamio/commit/78d64215b422dc4e5e1616cc20808f1936b2e9b4))
+  - Write PTW MCC, IC Profiler PRM, and SRS MapCHECK files - Preserve SRS source tables, movie
+  channels, and correction records in metadata - Export edited Measurement signals and omit
+  interpolated movie pixels - Regenerate SRS checksums and preserve native text encodings - Declare
+  format capabilities and warn when dropping unsupported measurements - Add round-trip tests and
+  document export and conversion behavior
+
+
 ## v0.5.0 (2026-11-04)
 
 ### Features
