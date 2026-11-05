@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-11-05)
+
+### Features
+
+- **matrixx**: Support OPG, OPD, and OPW acquisitions
+  ([`d4a9444`](https://github.com/Phillip-Duncan/beamio/commit/d4a9444d306bdb12af67c58e349d0cde10e47ce1))
+  - Add MatriXX readers and writers with automatic format detection - Expose dose planes and
+  snapshot time series through Measurements - Preserve native records, flags, non-dose images, and
+  energy units - Resolve workspace paths and reject non-OPD dependencies - Export edited doses at
+  native precision and regenerate checksums - Add regression tests, format documentation, and
+  packaging exclusions
+
+
 ## v0.6.0 (2026-11-04)
 
 ### Features
