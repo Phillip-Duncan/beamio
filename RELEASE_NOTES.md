@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-11-05)
+
+### Features
+
+- **arccheck**: Support measured grids and native movies
+  ([`991c2c8`](https://github.com/Phillip-Duncan/beamio/commit/991c2c8b1a85ba15975d53dd8e0ad6027a2bd14a))
+  - Add TXT, ACM, and ACML readers and writers with automatic detection - Expose detector frames,
+  timestamps, and helical coordinates through Measurements - Preserve acquisition metadata and
+  resolve ACML geometry companions - Interpolate missing static sites and preserve zero edits on
+  export - Share SNC Patient grid parsing and serialization with SRS MapCHECK - Add regression
+  tests, format documentation, and packaging exclusions
+
+
 ## v0.7.0 (2026-11-05)
 
 ### Features
