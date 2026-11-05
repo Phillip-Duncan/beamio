@@ -9,11 +9,12 @@
 | PTW Mephysto MCC water-tank scans | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
 | SNC IC PROFILER acquisitions (version 25 validated) | `beamio.rfa.ICProfiler` | `.prm` | `BeamDataFactory.from_file(path)` |
 | SNC SRS MapCHECK dose maps and raw movies (revision A validated) | `beamio.rfa.SRSMapCheck` | `.txt`, `.smcm` | `BeamDataFactory.from_file(path)` |
+| SNC ArcCHECK measured/merged dose maps and raw/processed movies | `beamio.rfa.ArcCHECK` | `.txt`, `.acm`, `.acml` | `BeamDataFactory.from_file(path)` |
 | RayStation 2025+ measured-curves CSV | `beamio.tps.raystation.Raystation` | `.csv` | Use the class explicitly |
 
 `BeamDataFactory.is_supported_file(path)` checks the extension only; `from_file`
 reads file contents to identify a supported reader. Extension discovery
-currently returns `['asc', 'mcc', 'opd', 'opg', 'opw', 'prm', 'smcm', 'snctxt', 'sncxml', 'txt']`.
+currently returns `['acm', 'acml', 'asc', 'mcc', 'opd', 'opg', 'opw', 'prm', 'smcm', 'snctxt', 'sncxml', 'txt']`.
 The `.txt` extension is shared by many formats; it does not identify an SRS
 MapCHECK file by itself. Content detection requires its first-line signature.
 
@@ -701,3 +702,185 @@ metadata key. Automated tests cover depth, crossline, inline, and diagonal
 profiles, including reversed scans, using synthetic samples. Writers may apply
 their own coordinate precision or schema defaults; formats limited to a single
 profile axis cannot retain all measured off-axis motion.
+
+
+## SNC ArcCHECK
+
+```python
+from beamio.rfa import ArcCHECK, BeamDataFactory
+
+beam = BeamDataFactory.from_file("measurement.txt")
+# Equivalent: ArcCHECK("measurement.txt").parse()
+measurement = beam.measurements[0]
+dose_cgy = measurement.doses                 # rows x columns
+axial_y_mm, unwrapped_x_mm = measurement.axes
+measurement.doses[10, 10] *= 1.01
+beam.save("edited.txt")
+
+merged = ArcCHECK("merge.txt").parse().measurements[0]
+print(merged.doses.shape)                    # (73, 131) in the validated long-field example
+
+native = ArcCHECK("measurement.txt").parse(interpolate=False)
+# Exact exported values, including zero-padded unmeasured grid sites.
+```
+
+ArcCHECK measured and merged text exports produce one static `DosePlane`.
+Signals retain the exported cGy scale (`metadata["DoseUnit"] == "cGy").
+Axes are the native unwrapped coordinates in mm: Y is axial, X runs around
+its cylindrical surface. These describe the exported surface projection;
+`reconstruct_xyz()` returns that flat layout, not physical points on the
+cylinder or a sampled dose volume. Orientation, CAX offsets, shifts and
+rotations remain metadata; the already-exported coordinates are preserved
+without applying those transformations again.
+
+For `Measured File`, doses come from the final `Dose Interpolated` table.
+For `Merged File`, they come from `Dose Counts`. The supplied merged export
+contains populated Dose Counts but empty interpolated tables, despite being calibrated; its
+zero dose-per-count header is not reapplied to those saved dose values.
+The selected source is explicit in
+`measurement.metadata["ArcCHECK"]["Source Table"]`.
+
+By default, empty sites with both zero Data Flags and zero source dose are
+filled by coordinate-weighted linear interpolation along rows, then columns.
+This completes the alternating boundary gaps in measured exports and provides
+bilinear interpolation on the rectangular detector lattice in merged exports.
+Only bracketed gaps are filled; values outside the available support remain
+unchanged. Recorded zeros, vendor-interpolated values and supplied nonzero
+values are preserved exactly. No renormalization, summation or dose calibration
+is performed. Use `parse(interpolate=False)` to retain exact native values.
+The option applies to static TXT files; movies always expose native detectors.
+
+All ten source tables, including flags, raw/corrected counts and calibration
+records, remain in `file_meta["ArcCHECK"]["Tables"]`. When gaps are filled,
+the completed Measurement array is separate from the original source table;
+otherwise they share an array. When zero flags occur, `Missing Mask` in
+`file_meta["ArcCHECK"]` records original empty sites independently of later
+dose edits, including when interpolation is disabled. `Interpolation Mask`
+records successfully filled sites when interpolation occurs. `Grid` holds native
+axes and row/column IDs. `Header Lines` retains complete original header
+records, including merged source-file provenance. Parsed header fields,
+measurement corrections, software/revision/model labels and the original
+checksum also remain in metadata. The combined date/time row stays together
+in `file_meta["Header"]["Date"]`; its separate `Time` field is the acquisition
+duration in milliseconds. Photon energy and FFF labels map to shared metadata;
+unrecognized energy labels warn and remain unchanged in metadata.
+
+Native text writing requires retained acquisition metadata and unchanged unwrapped
+grid geometry. Measured files write current `Measurement.doses`, including
+completed sites and edits to them, into Dose Interpolated. Supplied or completed
+pixels with zero source flags receive the interpolated-site flag 68 used by
+the validated revision E exports. This preserves intentional zero dose edits
+on default reload. Unfilled padding retains flag zero; existing nonzero flags
+and all original in-memory tables remain unchanged. Merged files write
+current values at recorded sites into Dose Counts while restoring original
+empty slots; edits to those generated pixels are ignored. Default loading
+recomputes their interpolation from the saved readings, so editing a detector
+can change its generated neighbours after reload. Other source tables are
+preserved independently; merged Data Flags are unchanged. CRC-32 is regenerated.
+Editing a dose does not recompute correction/calibration tables. Existing
+parsed header fields can be edited in file metadata; shared energy and
+`FluenceMode` edits control the emitted beam-energy label. Unsupported units,
+radiation, geometry or malformed native tables fail before the destination is
+opened. SSD, nominal field-size and wedge edits cannot be
+represented by this measured-file schema and are rejected.
+
+UTF-8, UTF-8 BOM and CP1252 are retained; output uses CRLF. Source checksums
+are verified when present. Legacy exports without a checksum are accepted;
+new output always includes one. Revision E and native model `1220 ArcCHECK`
+are validated. Other revisions/models warn and attempt the same schema.
+Text detection checks the complete software/revision/type/manufacturer/
+model preamble, not a filename extension or an incidental ArcCHECK mention.
+
+Validation covers eight supplied SNC Patient 8.5.1.9 exports, including the
+two shifted/inverted long-field acquisitions and their 73x131 merged result.
+Each measured export has 170 empty boundary sites; the merged export has
+7,121 empty grid sites. All are filled without changing supplied values.
+Native tables and header values are retained; completed measured output and
+sparse merged output are checked separately, including primary dose edits.
+Grid parsing and serialization are shared with SRS MapCHECK, with its existing
+regression suite retained.
+
+[Sun Nuclear's current ArcCHECK specifications](https://www.sunnuclear.com/products/arccheck)
+and [ArcCHECK-MR specifications](https://www.sunnuclear.com/products/arccheck-mr)
+list the same detector count and nominal array dimensions. Its documented
+large-field workflow combines measurements in software, extending coverage
+up to 36 cm. The reader uses declared dimensions and coordinates instead of
+hard-coding detector count or length. Compatible MR model labels are covered
+synthetically, but no native MR sample has been validated; MR-specific
+corrections already present in the export are retained, not recalculated.
+
+The [manufacturer's ArcCHECK Reference Guide](https://www.scribd.com/document/571119223/ArcCHECK-Reference-Guide-RevP-July)
+describes the measured tables, unwrapped display and separate raw movie formats.
+The reader handles measured/merged `.txt` exports and the movie formats below.
+
+### ArcCHECK movies
+
+```python
+raw = ArcCHECK("measurement.acm").parse().measurements[0]
+raw_frame = raw.doses[100]                 # (21, 66), cumulative raw counts
+interval_counts = raw.doses[101] - raw.doses[100]
+xyz_mm = raw.coordinates                  # (21, 66, 3), fixed helical detector positions
+
+movie = ArcCHECK("measurement.acml").parse()  # requires measurement.acm alongside it
+dose = movie.measurements[0]
+processed_frame_cgy = dose.doses[100]      # native processed cumulative cGy
+times_seconds = dose.times
+dose.doses[100, 2, 4] *= 1.01
+movie.save("edited.acml")
+```
+
+Both formats expose a `DosePlane` / `TimeSeries` Measurement with native
+`doses[time, detector_turn, detector_column]`. The validated detector grid is
+21x66. The ACM's layout definitions provide the turn size and unwrapped axes;
+no fixed detector count or movie interpolation is imposed. Unlike text-file
+images, rows follow detector-number order and the unwrapped axial axis is
+ascending. `coordinates` contains the exported physical XYZ positions in mm,
+including each detector's helical axial offset. `reconstruct_xyz()` therefore
+returns the physical helix for movies, whereas measured TXT files retain the
+unwrapped flat export. No global orientation/shift transform is inferred.
+
+ACM is a raw-count acquisition. Counts, including negative startup values,
+are preserved without background subtraction, calibration, interpolation,
+baseline removal or temporal summation. `times` uses native TIMETIC1 in seconds.
+Background/calibration vectors (including the reference channel), full original
+header/definition/coordinate rows, secondary clock, reference diode, statuses,
+pulses, angles and field-size channels remain in file metadata. Large detector
+signal arrays live only in `Measurement.doses`; `Auxiliary Data` contains only
+the small telemetry columns listed by `Auxiliary Columns`.
+
+ACML stores vendor-processed cumulative cGy frames as float32, along with two
+clocks, two uint32 statuses, gantry angles and a raw reference-channel word.
+Frames are read directly, without attempting to reproduce SNC's correction
+pipeline. Original binary header bytes, parsed header/scalars, background and
+calibration vectors, raw detector-flag bytes, and auxiliary records remain in
+metadata. Its binary file contains no detector coordinates or turn-size
+definitions. Loading requires a same-stem ACM beside it; the reader validates
+the serial and detector count before borrowing only its geometry. That ACM is
+not used to regenerate or recalibrate ACML dose values, and its raw signal is
+not retained inside the ACML object's metadata. No energy value is inferred
+for ACML from its geometry source.
+
+The supplied set validates 2,830 raw ACM frames and 2,829 ACML frames. ACML
+starts after the ACM baseline update; preserve each format's native timestamps
+rather than assuming equal frame indices. The final ACML frame matches all
+1,386 physical detector values in the TXT's Dose Counts after float32 rounding.
+The final-minus-initial ACM counts match the TXT's physical Raw Counts.
+Cumulative values must not be summed again to obtain an integrated measurement.
+
+Native writing uses edited `Measurement.doses` and `times`. ACM writes raw
+counts and regenerates CRC-32; ACML writes processed float32 dose values at
+native precision. Other clocks and telemetry remain independent metadata.
+Movie geometry, native frame count, signal units and beam-energy fields must
+remain compatible with the original acquisition. Raw and processed movies
+cannot be converted into each other's native formats by the writer. Static TXT
+conversion requires callers to construct/select the desired static data and
+retain the native acquisition metadata required by that writer.
+
+ACML export also ensures a same-stem ACM geometry dependency is available next
+to the destination. It reuses an existing compatible companion without changing
+it, or copies the original ACM when no companion exists. Incompatible existing
+companions fail before either output is touched. The source geometry ACM must
+remain available when saving; its raw counts are preserved independently of
+edited ACML processed doses. All outputs are prepared before writing, although
+the pair is not a filesystem transaction. ACM revision D and ACML revision C
+are validated; other revisions warn and attempt the known record layout.

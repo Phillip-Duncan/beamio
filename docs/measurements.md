@@ -178,6 +178,7 @@ their radiation capabilities so undeclared radiation remains undeclared.
 | PTW MCC | Static | Depth, crossline, inline | Photon, electron, undeclared |
 | IC Profiler | TimeSeries | Crossline, inline, diagonal | Photon, electron, proton, undeclared |
 | SRS MapCHECK | Static, TimeSeries | DosePlane | Photon, undeclared |
+| ArcCHECK text and movies | Static, TimeSeries | DosePlane | Photon, undeclared |
 | IBA MatriXX / OmniPro | Static, TimeSeries | DosePlane | Photon, electron, proton, undeclared |
 
 Conversion checks declared types; it does not ensure a complete native

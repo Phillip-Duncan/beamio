@@ -8,7 +8,7 @@ import pytest
 
 from beamio.common import AcquisitionType, MeasurementType, RadiationType
 from beamio.common.beamdata import BeamData
-from beamio.rfa import IBAAccept6, ICProfiler, PTWMCC, SNCSunScan, SRSMapCheck
+from beamio.rfa import ArcCHECK, IBAAccept6, ICProfiler, PTWMCC, SNCSunScan, SRSMapCheck
 from beamio.tps.raystation import Raystation
 from tests.support.measurements import array_measurement
 from tests.support.srsmapcheck import measured_export
@@ -81,6 +81,10 @@ def test_mixed_conversion_warns_once_per_drop_preserves_order_and_source(measure
         (SRSMapCheck, MeasurementType.DosePlane, True, RadiationType.PHOTON, True),
         (SRSMapCheck, MeasurementType.DosePlane, True, RadiationType.ELECTRON, False),
         (SRSMapCheck, MeasurementType.CrosslineProfile, False, RadiationType.PHOTON, False),
+        (ArcCHECK, MeasurementType.DosePlane, False, RadiationType.PHOTON, True),
+        (ArcCHECK, MeasurementType.DosePlane, True, RadiationType.PHOTON, True),
+        (ArcCHECK, MeasurementType.DoseVolume, False, RadiationType.PHOTON, False),
+        (ArcCHECK, MeasurementType.DosePlane, False, RadiationType.ELECTRON, False),
     ],
 )
 def test_concrete_format_capabilities_control_conversion(
@@ -102,7 +106,7 @@ def test_concrete_format_capabilities_control_conversion(
 
 
 @pytest.mark.parametrize(
-    "target", [IBAAccept6, SNCSunScan, PTWMCC, ICProfiler, SRSMapCheck, Raystation]
+    "target", [IBAAccept6, SNCSunScan, PTWMCC, ICProfiler, SRSMapCheck, ArcCHECK, Raystation]
 )
 def test_unknown_radiation_is_explicitly_supported(target):
     source = ArrayFormat("")

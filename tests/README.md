@@ -7,6 +7,9 @@ Tests follow the production area they exercise:
 | `rfa/test_factory.py` | Text/binary/XML detection, Unicode encodings, namespaces, and extension discovery |
 | `rfa/test_iba.py` | IBA parsing, numerical cleanup, writing, and round trips |
 | `rfa/test_matrixx.py` | OPG scaling/orientation, OPD records/flags, snapshot times, primary dose edits, checksums, workspace dependencies and export validation |
+| `rfa/test_arccheck.py` | Measured/merged source tables, unwrapped coordinates, native records, energy labels, MR schemas, checksums and edited exports |
+| `rfa/test_arccheck_interpolation.py` | Flag-aware boundary and merged-grid interpolation, exact native opt-out, recorded zeros, descending/nonuniform axes and sparse export semantics |
+| `rfa/test_arccheck_movie.py` | ACM/ACML native frames, physical helical coordinates, clocks/statuses, companion validation, edited signals, binary preservation and malformed records |
 | `rfa/test_ptw.py` | PTW MCC parsing, geometry, signals/reference data, encodings, and rejection of unsupported inputs |
 | `rfa/test_icprofiler.py` | IC Profiler PRM frames, leakage/calibration, detector gaps, diagonal geometry, metadata, encodings, and validation |
 | `rfa/test_icprofiler_series.py` | Native cumulative Measurements, caller-side NumPy differencing/scaling, timestamp/counter preservation, raw-table release, and profile analysis |
@@ -24,6 +27,8 @@ Tests follow the production area they exercise:
 | `support/snc.py` | Synthetic SNC text and XML exports |
 | `support/ptw.py` | Synthetic PTW MCC exports |
 | `support/matrixx.py` | Synthetic IBA OPG grids and binary OPD records |
+| `support/arccheck.py` | Synthetic ArcCHECK measured and merged text exports with CRC-32 |
+| `support/arccheck_movie.py` | Synthetic ASCII raw movies and binary processed movie-lite records |
 | `support/icprofiler.py` | Synthetic IC Profiler PRM acquisitions |
 | `support/srsmapcheck.py` | Asymmetric synthetic SRS MapCHECK dose maps and raw movies |
 

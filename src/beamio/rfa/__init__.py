@@ -2,6 +2,7 @@
 third-party applications for data handling (mostly input) (e.g., loading of IBA myQA Accept data)"""
 
 from beamio.rfa.iba import IBAAccept6
+from beamio.rfa.arccheck import ArcCHECK
 from beamio.rfa.icprofiler import ICProfiler
 from beamio.rfa.matrixx import IBAMatriXX
 from beamio.rfa.ptw import PTWMCC
@@ -12,6 +13,7 @@ from beamio.rfa.factory import BeamDataFactory
 
 
 __all__ = [
+    'ArcCHECK',
     'IBAAccept6',
     'ICProfiler',
     'IBAMatriXX',

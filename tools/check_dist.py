@@ -93,6 +93,8 @@ def check_archives(directory, tag):
                 path.suffix.lower()
                 not in {
                     ".asc",
+                    ".acm",
+                    ".acml",
                     ".csv",
                     ".mcc",
                     ".opg",

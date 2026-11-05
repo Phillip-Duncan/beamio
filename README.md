@@ -15,6 +15,7 @@ using a shared NumPy-based data model.
 | PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | Yes | Yes |
 | SNC IC PROFILER acquisitions (`.prm`, version 25 validated) | Yes | Yes; native acquisition metadata required | Yes |
 | SNC SRS MapCHECK dose maps (`.txt`) and raw movies (`.smcm`, revision A validated) | Yes | Yes; native acquisition metadata required | Yes |
+| SNC ArcCHECK dose maps (`.txt`), raw movies (`.acm`) and processed movie-lite (`.acml`) | Yes; ACML requires matching ACM geometry | Yes; native acquisition metadata required | Yes |
 | RayStation 2025+ measured-curves CSV (`.csv`, semicolon-delimited) | Yes | Yes | No; use `Raystation` directly |
 
 ## Installation

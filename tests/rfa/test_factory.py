@@ -22,11 +22,15 @@ from tests.support.snc import xml_export
         "scan.OPG",
         "scan.OPD",
         "scan.OPW",
+        "scan.ACM",
+        "scan.ACML",
     ],
 )
 def test_supported_extensions(name):
     assert BeamDataFactory.is_supported_file(name)
     assert BeamDataFactory.get_supported_extensions() == [
+        "acm",
+        "acml",
         "asc",
         "mcc",
         "opd",

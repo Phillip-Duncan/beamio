@@ -2,6 +2,8 @@ import os
 import xml.etree.ElementTree as ET
 
 from beamio.rfa.iba import IBAAccept6
+from beamio.rfa.arccheck import ArcCHECK, is_arccheck_header
+from beamio.rfa._arccheck_movie import is_acm, is_acml
 from beamio.rfa.icprofiler import ICProfiler
 from beamio.rfa.matrixx import IBAMatriXX
 from beamio.rfa.ptw import PTWMCC
@@ -18,6 +20,9 @@ from beamio.common.beamdata import BeamData
 #   'file_extensions' → list of valid file extensions (without the leading dot e.g., 'asc', 'txt')
 # --------------------------------------------------------------------------
 BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
+    ArcCHECK: {
+        "file_extensions": ["txt", "acm", "acml"],
+    },
     IBAMatriXX: {
         "first_line": ["<opimrtascii>", "[FileVersion]"],
         "file_extensions": ["opg", "opd", "opw"],
@@ -91,12 +96,18 @@ class BeamDataFactory:
                 pass
         if prefix.startswith(b"opdfile\0"):
             return IBAMatriXX(file_path).parse()
+        if is_acml(prefix):
+            return ArcCHECK(file_path).parse()
         if xml_root == "snc_fileexport":
             return SNCSunScan(file_path).parse()
         head = prefix.decode("utf-8-sig", errors="ignore")
         first_line = next((line.strip() for line in head.splitlines() if line.strip()), "")
 
         for cls, rules in BEAMDATA_KEYWORDS.items():
+            if cls is ArcCHECK:
+                if is_arccheck_header(head) or is_acm(head):
+                    return cls(file_path).parse()
+                continue
             if cls is ICProfiler:
                 # Free-text header fields can extend beyond the initial prefix.
                 # Inspect labelled lines rather than matching quoted signatures.

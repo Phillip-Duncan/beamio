@@ -15,6 +15,9 @@ dependency, NumPy. Importing the package does not read files or start services.
 | `src/beamio/rfa/ptw.py` | PTW Mephysto MCC water-tank parsing and shared-model mapping |
 | `src/beamio/rfa/icprofiler.py` | IC PROFILER PRM frames, calibration, and four-axis profiles |
 | `src/beamio/rfa/srsmapcheck.py` | SRS MapCHECK static/temporal plane measurements and original vendor records |
+| `src/beamio/rfa/arccheck.py` | ArcCHECK measured/merged unwrapped dose grids and native record preservation |
+| `src/beamio/rfa/_snc_patient_grid.py` | SNC Patient text-grid parsing, validation and serialization shared by ArcCHECK and SRS MapCHECK |
+| `src/beamio/rfa/_arccheck_movie.py` | Native ACM/ACML movie frames, helical geometry, telemetry and geometry dependencies |
 | `src/beamio/tps/raystation.py` | RayStation measured-curves CSV parsing and writing |
 
 ## Shared model

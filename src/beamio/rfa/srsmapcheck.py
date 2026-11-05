@@ -10,6 +10,7 @@ import zlib
 
 import numpy as np
 
+from beamio.rfa._snc_patient_grid import read_grids, write_grids
 from beamio.common.beamdata import BeamData
 from beamio.common.measurement import AcquisitionType, Measurement, MeasurementType, RadiationType
 
@@ -98,64 +99,7 @@ def _axis(values: np.ndarray, name: str) -> None:
 
 
 def _grids(lines: list[str], nrows: int, ncols: int):
-    tables: dict[str, np.ndarray] = {}
-    reference = None
-    index = 0
-    checksum = None
-    while index < len(lines):
-        name = lines[index].strip()
-        index += 1
-        if not name:
-            continue
-        if re.fullmatch(r"[0-9A-Fa-f]{1,8}", name) and not any(
-            line.strip() for line in lines[index:]
-        ):
-            checksum = name
-            break
-        if name in tables:
-            raise ValueError(f"Duplicate SRS MapCHECK table: {name}")
-        block = lines[index : index + nrows + 3]
-        if len(block) != nrows + 3 or _cells(block[0]) != ["Ycm", "ROW"]:
-            raise ValueError(f"SRS MapCHECK {name}: incomplete table or missing Ycm/ROW heading.")
-        data = []
-        ys, row_ids = [], []
-        for row in block[1 : nrows + 1]:
-            cells = _cells(row)
-            if len(cells) != ncols + 2:
-                raise ValueError(f"SRS MapCHECK {name}: row width differs from Col Counts in 2D.")
-            ys.append(_number(cells[0], f"{name} Ycm") * 10)
-            row_ids.append(_integer(cells[1], f"{name} ROW"))
-            data.append([_number(value, name) for value in cells[2:]])
-        columns, xs = _cells(block[-2]), _cells(block[-1])
-        if (
-            len(columns) != ncols + 2
-            or columns[:2] != ["", "COL"]
-            or len(xs) != ncols + 2
-            or xs[:2] != ["", "Xcm"]
-        ):
-            raise ValueError(f"SRS MapCHECK {name}: missing or incomplete COL/Xcm coordinates.")
-        column_ids = [_integer(value, f"{name} COL") for value in columns[2:]]
-        if sorted(row_ids) != list(range(1, nrows + 1)) or sorted(column_ids) != list(
-            range(1, ncols + 1)
-        ):
-            raise ValueError(
-                f"SRS MapCHECK {name}: duplicate or inconsistent row/column identifiers."
-            )
-        x = np.array([_number(value, f"{name} Xcm") * 10 for value in xs[2:]])
-        y = np.array(ys)
-        _axis(x, "X")
-        _axis(y, "Y")
-        geometry = (x, y, np.array(row_ids), np.array(column_ids))
-        if reference is not None and any(
-            not np.array_equal(a, b) for a, b in zip(reference, geometry)
-        ):
-            raise ValueError(f"SRS MapCHECK {name}: grid geometry differs from the other tables.")
-        reference = geometry
-        tables[name] = np.array(data)
-        index += nrows + 3
-    if "Dose Interpolated" not in tables:
-        raise ValueError("SRS MapCHECK measured files require a Dose Interpolated table.")
-    return reference, tables, checksum
+    return read_grids(lines, nrows, ncols, "SRS MapCHECK")
 
 
 def _movie(lines: list[str], info: dict, nrows: int, ncols: int):
@@ -470,36 +414,7 @@ class SRSMapCheck(BeamData):
             tables["Dose Interpolated"] = np.asarray(scan.doses)
             grid = native["Grid"]
             rows, columns = np.asarray(grid["Rows"]), np.asarray(grid["Columns"])
-            body = []
-            for name, values in tables.items():
-                values = np.asarray(values)
-                if (
-                    values.dtype.kind not in "biuf"
-                    or values.shape != scan.spatial_shape
-                    or not np.isfinite(values).all()
-                ):
-                    raise ValueError(
-                        f"SRS MapCHECK {name} must be a finite table matching the dose grid."
-                    )
-                if not isinstance(name, str) or any(c in name for c in "\r\n\t"):
-                    raise ValueError("SRS MapCHECK table names must be single-line labels.")
-                if rows.shape != (len(y),) or columns.shape != (len(x),):
-                    raise ValueError("SRS MapCHECK grid identifiers must match the dose grid.")
-                body.extend((name, "Ycm\tROW"))
-                body.extend(
-                    "\t".join(
-                        [f"{position / 10:.17g}", f"{row:.17g}", *(f"{v:.17g}" for v in sample)]
-                    )
-                    for position, row, sample in zip(y, rows, values)
-                )
-                body.extend(
-                    (
-                        "\tCOL\t" + "\t".join(f"{v:.17g}" for v in columns),
-                        "\tXcm\t" + "\t".join(f"{v / 10:.17g}" for v in x),
-                        "",
-                    )
-                )
-            _grids(body, len(y), len(x))
+            body = write_grids(tables, (x, y, rows, columns), "SRS MapCHECK")
         else:
             metadata["File Type"] = "Raw Movie Data"
             body = _movie_output(scan, native, info)
