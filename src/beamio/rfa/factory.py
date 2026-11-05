@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 
 from beamio.rfa.iba import IBAAccept6
 from beamio.rfa.icprofiler import ICProfiler
+from beamio.rfa.matrixx import IBAMatriXX
 from beamio.rfa.ptw import PTWMCC
 from beamio.rfa.snc import SNCSunScan
 from beamio.rfa.srsmapcheck import SRSMapCheck
@@ -17,6 +18,10 @@ from beamio.common.beamdata import BeamData
 #   'file_extensions' → list of valid file extensions (without the leading dot e.g., 'asc', 'txt')
 # --------------------------------------------------------------------------
 BEAMDATA_KEYWORDS: dict[type[BeamData], dict[str, list[str]]] = {
+    IBAMatriXX: {
+        "first_line": ["<opimrtascii>", "[FileVersion]"],
+        "file_extensions": ["opg", "opd", "opw"],
+    },
     SRSMapCheck: {
         "first_line": [
             "SRS MapCHECK Measurement File:\tMeasured File",
@@ -56,7 +61,7 @@ def _icprofiler_header(file_path: str) -> bool:
 
 
 class BeamDataFactory:
-    """Identify beam data by text signatures or its XML root."""
+    """Identify beam data by text/binary signatures or its XML root."""
 
     @staticmethod
     def from_file(file_path: str) -> BeamData:
@@ -84,6 +89,8 @@ class BeamDataFactory:
                         xml_root = event[1].tag.rsplit("}", 1)[-1]
             except ET.ParseError:
                 pass
+        if prefix.startswith(b"opdfile\0"):
+            return IBAMatriXX(file_path).parse()
         if xml_root == "snc_fileexport":
             return SNCSunScan(file_path).parse()
         head = prefix.decode("utf-8-sig", errors="ignore")

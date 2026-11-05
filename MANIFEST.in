@@ -8,5 +8,5 @@ recursive-include tools *.py
 
 global-exclude __pycache__
 global-exclude *.py[cod]
-global-exclude *.mcc *.prm *.smcm *.dcm *.snctxt *.sncxml
+global-exclude *.mcc *.prm *.smcm *.dcm *.snctxt *.sncxml *.opg *.opd *.opw
 recursive-exclude src/beamio *.asc

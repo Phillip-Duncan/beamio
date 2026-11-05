@@ -9,6 +9,7 @@ dependency, NumPy. Importing the package does not read files or start services.
 | `src/beamio/profile.py` | Public vendor-independent profile edges, centres, and widths from one X/Y profile |
 | `src/beamio/common/beamdata.py` | Abstract reader/writer interface and conversion through independent copies |
 | `src/beamio/rfa/iba.py` | IBA myQA Accept 6 ASCII parsing and writing |
+| `src/beamio/rfa/matrixx.py` | IBA MatriXX/OmniPro OPG grids, OPD snapshots/integrals, OPW workspaces and native records |
 | `src/beamio/rfa/snc.py` | SNC text parsing/writing and shared-model mapping; `_snc_xml.py` reads XML layers |
 | `src/beamio/rfa/factory.py` | Content-based detection and supported-extension discovery |
 | `src/beamio/rfa/ptw.py` | PTW Mephysto MCC water-tank parsing and shared-model mapping |

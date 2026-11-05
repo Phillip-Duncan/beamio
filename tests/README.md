@@ -4,8 +4,9 @@ Tests follow the production area they exercise:
 
 | Path | Coverage |
 | --- | --- |
-| `rfa/test_factory.py` | Text/XML detection, Unicode encodings, namespaces, and extension discovery |
+| `rfa/test_factory.py` | Text/binary/XML detection, Unicode encodings, namespaces, and extension discovery |
 | `rfa/test_iba.py` | IBA parsing, numerical cleanup, writing, and round trips |
+| `rfa/test_matrixx.py` | OPG scaling/orientation, OPD records/flags, snapshot times, primary dose edits, checksums, workspace dependencies and export validation |
 | `rfa/test_ptw.py` | PTW MCC parsing, geometry, signals/reference data, encodings, and rejection of unsupported inputs |
 | `rfa/test_icprofiler.py` | IC Profiler PRM frames, leakage/calibration, detector gaps, diagonal geometry, metadata, encodings, and validation |
 | `rfa/test_icprofiler_series.py` | Native cumulative Measurements, caller-side NumPy differencing/scaling, timestamp/counter preservation, raw-table release, and profile analysis |
@@ -22,6 +23,7 @@ Tests follow the production area they exercise:
 | `support/measurements.py` | Shared scan cases and assertions |
 | `support/snc.py` | Synthetic SNC text and XML exports |
 | `support/ptw.py` | Synthetic PTW MCC exports |
+| `support/matrixx.py` | Synthetic IBA OPG grids and binary OPD records |
 | `support/icprofiler.py` | Synthetic IC Profiler PRM acquisitions |
 | `support/srsmapcheck.py` | Asymmetric synthetic SRS MapCHECK dose maps and raw movies |
 

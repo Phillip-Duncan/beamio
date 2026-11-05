@@ -3,6 +3,7 @@
 | Format | Reader/writer | Extension | Automatic detection |
 | --- | --- | --- | --- |
 | IBA myQA Accept 6 ASCII | `beamio.rfa.IBAAccept6` | `.asc` | `BeamDataFactory.from_file(path)` |
+| IBA MatriXX / OmniPro OPG, OPD and OPW | `beamio.rfa.IBAMatriXX` | `.opg`, `.opd`, `.opw` | `BeamDataFactory.from_file(path)` |
 | SNC SunSCAN/SunDOSE text | `beamio.rfa.SNCSunScan` | `.snctxt` | `BeamDataFactory.from_file(path)` |
 | SNC SunDOSE XML (read only) | `beamio.rfa.SNCSunScan` | `.sncxml` | `BeamDataFactory.from_file(path)` |
 | PTW Mephysto MCC water-tank scans | `beamio.rfa.PTWMCC` | `.mcc` | `BeamDataFactory.from_file(path)` |
@@ -12,7 +13,7 @@
 
 `BeamDataFactory.is_supported_file(path)` checks the extension only; `from_file`
 reads file contents to identify a supported reader. Extension discovery
-currently returns `['asc', 'mcc', 'prm', 'smcm', 'snctxt', 'sncxml', 'txt']`.
+currently returns `['asc', 'mcc', 'opd', 'opg', 'opw', 'prm', 'smcm', 'snctxt', 'sncxml', 'txt']`.
 The `.txt` extension is shared by many formats; it does not identify an SRS
 MapCHECK file by itself. Content detection requires its first-line signature.
 
@@ -30,6 +31,124 @@ same signed profile projection as SNC, including off-axis profiles. Their
 coordinates and doses remain aligned through filtering and deduplication.
 The writer reconstructs XYZ coordinates and rounds them to 0.1 mm. Metadata
 and numerical cleanup mean that files are not byte-for-byte round trips.
+
+## IBA MatriXX / OmniPro
+
+```python
+from beamio.rfa import BeamDataFactory, IBAMatriXX
+
+beam = BeamDataFactory.from_file("measurement.opd")
+# Equivalent: IBAMatriXX("measurement.opd").parse()
+for measurement in beam.measurements:
+    print(measurement.acquisition_type, measurement.doses.shape)
+    print(measurement.axes, measurement.times)
+
+beam.measurements[0].doses[..., 10, 10] *= 1.01
+beam.save("edited.opd")
+```
+
+The reader recognizes OPG's `<opimrtascii>` marker, OPD's binary `opdfile`
+signature, and OPW's `[FileVersion]` workspace header, independently of the
+extension. OPG/OPD version 4 and OPW version 1 are validated. Other versions
+emit a warning and are attempted using the same schema; incompatible record
+layouts still raise an error. No additional dependencies are needed.
+
+**OPG:** each `<asciibody>` becomes a static `DosePlane`. Dose samples are
+multiplied by `Data Factor` and converted from Gy/cGy/mGy to Gy;
+percentage signals retain their percentage scale. `metadata["DoseUnit"]`
+records `Gy` or `%`. Coordinates, SSD and field sizes use mm. Header and body
+properties are retained under `file_meta["IBA MatriXX"]["Header"]` and
+`measurement.metadata["IBA MatriXX"]["Body"]`, respectively.
+Grid dimensions and explicit coordinate values are read from the file;
+rectangular and nonuniform grids are supported without interpolation.
+XY, XZ, YX, YZ, ZX and ZY planes retain their orientation and plane position.
+Array axes are `(row, column)`; non-XY planes provide explicit XYZ coordinates.
+
+OPG writing supports generic static planes and uses `Measurement.doses`,
+axes, XYZ coordinates and common beam metadata. Multiple bodies must share
+beam metadata, dimensions and plane orientation. Source units, scaling,
+unknown properties and text encoding are retained when possible; numerical
+text/whitespace are regenerated. Dose values must be finite. Writing temporal
+data requires callers to select a frame and make a static Measurement first.
+Wedge-angle export is not implemented. Generic input must explicitly set
+`measurement.metadata["DoseUnit"]` to `Gy` or `%`; the writer does not assume
+that another reader's signal values are calibrated doses in Gy.
+The source energy unit is retained when radiation is unchanged or undeclared,
+including when editing the numeric energy. Explicitly changing radiation uses
+MV for photons and MeV for electrons/protons. Exporting an energy with
+undeclared radiation requires a retained source unit; no unit is guessed.
+
+**OPD:** datasets are decoded as length-labelled binary records, validating
+their image count, grid dimensions, record bounds and CRC-32. Native dose
+images (signal type 1) become `DosePlane` measurements in Gy. Contiguous
+`Snap` images with matching grid and beam setup become a `TimeSeries` with
+`doses[frame, row, column]` and elapsed seconds in `times`, starting at zero.
+Saved `Integral`, `Sum` and other dose images remain separate static
+measurements; they are not recomputed from snapshots. Snapshot signal values
+are preserved as saved, without temporal summation or differencing.
+OPD rows follow native storage order: the Y axis runs from its maximum to
+its minimum. Inspect `axes` rather than assuming ascending coordinates.
+
+Native image records and unknown payloads remain in
+`file_meta["IBA MatriXX"]["Images"]`. Each image has its name, signal type,
+grid description and ordered `(record_type, payload_bytes)` records.
+`measurement.metadata["IBA MatriXX"]["ImageIndices"]` associates its frames
+with these images. There is no duplicate raw array for dose images.
+The high pixel bit is retained separately as `PixelFlags` when present; doses
+contain the lower 31 bits after scaling. Flags are not interpreted as NaNs,
+and no pixel filtering or interpolation is applied. Non-dose images, including
+uncalibrated film scans and gamma results, retain their complete native
+`Pixels` arrays in metadata and are not presented as calibrated dose planes.
+An OPD with only non-dose images loads with an empty measurement list and a
+warning; those images can still be written back.
+
+The binary beam setup maps energy, SSD and nominal field sizes. Radiation
+code 0 maps to photons, as confirmed by the supplied paired OPD/OPG exports;
+other codes remain undeclared and are retained in native metadata.
+OPD writing requires the complete
+native dataset. It uses current `Measurement.doses`, preserving flags and all
+non-dose records, then regenerates the checksum. Values are rounded to the
+nearest native integer count (the retained image factor defines precision).
+Nonfinite, negative or out-of-range doses are rejected. Energy, SSD and field
+sizes can be edited within native precision. Existing image geometry and
+acquisition types must be retained; elapsed movie times must start at zero.
+Radiation/wedge editing and constructing new OPD acquisitions are unsupported.
+
+**OPW:** a workspace links datasets and analysis results; it is not a pixel
+container. Existing absolute references are used directly; relative references
+are resolved against the workspace directory, accepting either slash style.
+If a stored path is unavailable, the reader tries the referenced basename beside
+the workspace, then `<workspace>_1.opd`, `_2.opd`, or `_res.opd` as appropriate.
+Every fallback emits a warning. Missing dependencies raise an error; references
+must have an OPD binary signature and cannot recursively load workspaces.
+Measurement metadata identifies its `WorkspaceDataset`; all workspace
+sections and child dataset metadata are retained. Saving writes a new OPW and
+its companion OPDs with updated local references. All children are validated
+before writing any output, although the group is not a filesystem transaction.
+
+Validation includes the supplied older OPG/OPD/OPW files and an independent
+32×32 MatriXX OPD containing 33 snapshots and two integral images. Unedited
+OPD datasets round-trip byte-for-byte, including non-dose images.
+
+### Newer MatriXX models
+
+[IBA documents MatriXX Resolution as a 39×39 array with 6.5 mm spacing](https://helpcenter.iba-dosimetry.com/hc/en-us/articles/20045590471324-MatriXX-Resolution-Device-Description).
+Its [myQA workflow still uses OPG](https://helpcenter.iba-dosimetry.com/hc/en-us/articles/18858441464604-How-to-Import-the-Reference-Dose-Plane-for-User-Uniformity-Calibration).
+The reader accepts these dimensions and compatible OPG schemas, with synthetic
+39×39 coverage. This does not establish support for every newer native export:
+Resolution/AiR native samples have not yet been validated.
+[MatriXX AiR is a newer particle-therapy array](https://www.iba-dosimetry.com/product/myqa-matrixx-air);
+its proprietary acquisition format is not claimed as supported.
+
+[IBA's myQA 2023 release bulletin](https://helpcenter.iba-dosimetry.com/hc/en-us/article_attachments/9957147256860)
+also describes in-phantom rotation in OPG. Rotation fields are retained with
+a warning; coordinates remain in the exported plane frame, and beamio does
+not infer an unverified transformation into global coordinates. Samples or
+a specification are needed to validate those rotation conventions.
+
+The [FRED Tools OmniPro documentation](https://jasqs.github.io/FREDtools/Documentation/ImgIO.html#omnipro-files-opg-opd)
+is an independent reference for OPG scaling and OPD image types. beamio uses
+its own NumPy/standard-library implementation and has no FRED Tools dependency.
 
 ## SNC SunSCAN / SunDOSE
 

@@ -9,6 +9,7 @@ using a shared NumPy-based data model.
 | Format | Read | Write | Automatic detection |
 | --- | --- | --- | --- |
 | IBA myQA Accept 6 ASCII (`.asc`) | Yes | Yes | Yes |
+| IBA MatriXX / OmniPro OPG planes, OPD datasets and OPW workspaces (`.opg`, `.opd`, `.opw`) | Yes | Yes; OPD/OPW require native metadata | Yes |
 | SNC SunSCAN/SunDOSE text (`.snctxt`) | Yes | Yes | Yes |
 | SNC SunDOSE XML (`.sncxml`) | Yes | No | Yes |
 | PTW Mephysto MCC water-tank scans (`.mcc`) | Yes | Yes | Yes |
@@ -30,7 +31,7 @@ python -m pip install beamio
 from beamio.rfa import BeamDataFactory, IBAAccept6
 from beamio.tps.raystation import Raystation
 
-# Detect and parse an IBA ASCII, SNC, PTW MCC, IC Profiler, or SRS MapCHECK export.
+# Detect and parse an IBA, SNC, PTW MCC, IC Profiler, or SRS MapCHECK export.
 beam = BeamDataFactory.from_file("measurements.asc")
 # Or select the reader explicitly:
 # beam = IBAAccept6("measurements.asc").parse()
@@ -47,6 +48,24 @@ converted.save("measured_curves.csv")
 # RayStation CSV files use the explicit reader.
 curves = Raystation("measured_curves.csv").parse()
 ```
+
+MatriXX exports expose full NumPy dose grids in Gy, with axes in mm:
+
+```python
+from beamio.rfa import IBAMatriXX
+
+beam = IBAMatriXX("measurement.opd").parse()  # also .opg and .opw
+measurement = beam.measurements[0]
+print(measurement.doses.shape)  # (rows, columns), or (frames, rows, columns)
+print(measurement.axes, measurement.times)
+measurement.doses[..., 10, 10] *= 1.01
+beam.save("edited.opd")  # native integer precision; retains other OPD records
+```
+
+OPD snapshots form time series; saved integral images remain separate static
+measurements. Film scans and gamma results are retained in metadata. Grid sizes
+are read from the file, including 39×39 exports; newer native file variants still
+need sample validation. See [MatriXX format details](docs/formats.md#iba-matrixx--omnipro).
 
 SNC exports use the same interface:
 

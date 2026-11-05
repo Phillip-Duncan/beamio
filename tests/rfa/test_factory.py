@@ -19,6 +19,9 @@ from tests.support.snc import xml_export
         "scan.PRM",
         "scan.TXT",
         "scan.SMCM",
+        "scan.OPG",
+        "scan.OPD",
+        "scan.OPW",
     ],
 )
 def test_supported_extensions(name):
@@ -26,6 +29,9 @@ def test_supported_extensions(name):
     assert BeamDataFactory.get_supported_extensions() == [
         "asc",
         "mcc",
+        "opd",
+        "opg",
+        "opw",
         "prm",
         "smcm",
         "snctxt",
